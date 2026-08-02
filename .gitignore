@@ -1,0 +1,6 @@
+*.yml
+*.pyc
+*.db
+*.db-journal
+*.txt
+*.json
