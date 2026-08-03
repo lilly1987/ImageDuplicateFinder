@@ -46,7 +46,11 @@ def main():
     scroll_x.config(command=folder_list.xview)
 
     info_frame = tk.Frame(root)
-    info_frame.grid(row=2, column=0, columnspan=2, sticky="w", padx=5, pady=2)
+    info_frame.grid(row=2, column=0, columnspan=2, sticky="w" )
+
+    
+    tk.Button(info_frame, text=lang["ui"]["settings_button"],
+              command=lambda: show_settings_window(root, lang)).pack(side="left")
 
     count_label = create_count_label(info_frame, lang)
     count_label.pack(side="left", padx=(0, 2))
@@ -64,13 +68,13 @@ def main():
             logger.info(f"[bold cyan][알림] 캐시 건수 새로고침 완료 (알고리즘: {method}, 해시 크기: {hash_size}, 해시: {h_cnt:,}개, 비교: {c_cnt:,}개)[/bold cyan]")
 
     tk.Button(info_frame, text="캐시 초기화",
-              command=lambda: clear_cache(update_cache_ui)).pack(side="left", padx=2)
+              command=lambda: clear_cache(update_cache_ui)).pack(side="left")
 
     tk.Button(info_frame, text="DB 삭제",
-              command=lambda: drop_db(update_cache_ui)).pack(side="left", padx=2)
+              command=lambda: drop_db(update_cache_ui)).pack(side="left")
 
     tk.Button(info_frame, text="캐시 새로고침",
-              command=lambda: update_cache_ui(verbose=True)).pack(side="left", padx=2)
+              command=lambda: update_cache_ui(verbose=True)).pack(side="left")
 
     update_cache_ui()
 
@@ -83,12 +87,6 @@ def main():
     def save_apply_depth_option():
         config["apply_depth_all"] = all_apply_var.get()
         save_config(config)
-
-    tk.Button(button_frame, text=lang["ui"].get("duplicate_results_window", "중복 결과"),
-              command=lambda: show_duplicate_results_window(root, lang)).pack(side="left")
-
-    tk.Button(button_frame, text=lang["ui"]["settings_button"],
-              command=lambda: show_settings_window(root, lang)).pack(side="left")
 
     tk.Checkbutton(button_frame, text="깊이 일괄 적용",
                    variable=all_apply_var,
@@ -112,6 +110,9 @@ def main():
     stop_btn = tk.Button(button_frame, text=lang["ui"].get("stop_button", "비교 중단"), state="disabled")
     stop_btn.pack(side="left")
 
+    tk.Button(button_frame, text=lang["ui"].get("duplicate_results_window", "중복 결과"),
+              command=lambda: show_duplicate_results_window(root, lang)).pack(side="left")
+              
     def on_stop_click():
         request_stop()
         logger.warning("[bold yellow][알림] 비교 중단 요청이 접수되었습니다. 현재 진행 중인 루프 종료 후 멈춥니다...[/bold yellow]")

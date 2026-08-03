@@ -309,6 +309,7 @@ def show_duplicate_results_window(root, lang):
         for file_path in paths_to_delete:
             try:
                 if os.path.isfile(file_path):
+                    print(f"Deleting file: {file_path}")
                     os.remove(file_path)
             except OSError:
                 failed.append(file_path)
