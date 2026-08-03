@@ -867,11 +867,7 @@ def _compare_result(total_duplicates, compare_file_paths, method, hash_size, max
     }
 
 
-def try_compare(folder_list):
-    reset_stop()
-    start_time = time.perf_counter()
-    logger.info("[bold yellow][비교 시작][/bold yellow]")
-    options = load_config()
+def _resolve_compare_options(options):
     search_mode = options.get("search_mode", "all_folders")
     include_sub = options.get("include_subfolders", "include") == "include"
     method = options.get("compare_method", "ahash")
@@ -903,393 +899,233 @@ def try_compare(folder_list):
     load_saved_results = bool(options.get("load_saved_results_on_start", False))
     auto_open_duplicate_results = bool(options.get("auto_open_duplicate_results", False))
     use_compare_cache = bool(options.get("use_compare_cache", False))
-    logger.info(f"Options: mode={search_mode}, include_sub={include_sub}, method={method}, hash_size={hash_size}, tolerance={tolerance} ({tolerance_rate}), duplicate_limit={duplicate_limit}, max_compare_files={max_compare_files}, max_hash_compute_files={max_hash_compute_files}, save_results={save_duplicate_results}, load_saved_results={load_saved_results}, auto_open={auto_open_duplicate_results}, use_compare_cache={use_compare_cache}")
     aspect_ratio_tol = float(options.get("aspect_ratio_tolerance", 0.02))
+    batch_size = int(options.get("hash_precompute_batch_size", 1000))
+    return {
+        "search_mode": search_mode,
+        "include_sub": include_sub,
+        "method": method,
+        "hash_size": hash_size,
+        "tolerance_rate": tolerance_rate,
+        "tolerance": tolerance,
+        "duplicate_limit": duplicate_limit,
+        "max_compare_files": max_compare_files,
+        "max_hash_compute_files": max_hash_compute_files,
+        "save_duplicate_results": save_duplicate_results,
+        "load_saved_results": load_saved_results,
+        "auto_open_duplicate_results": auto_open_duplicate_results,
+        "use_compare_cache": use_compare_cache,
+        "aspect_ratio_tol": aspect_ratio_tol,
+        "batch_size": batch_size,
+    }
 
-    if load_saved_results:
-        groups = load_duplicate_results_json(method, hash_size, aspect_ratio_tol, tolerance_rate)
-        if groups:
-            logger.info(f"[bold cyan][알림] 이전 저장된 중복 결과 {len(groups)}개 그룹을 불러왔습니다.")
 
-    folders = [entry.split(": ", 1)[1] for entry in folder_list.get(0, "end")]
-
-    total_compared = 0
-    total_duplicates = 0
-    total_pairs = 0
-    compare_file_paths = []
-    init_db()
-
-    try:
-        if search_mode == "cross_folder":
-            logger.info("[bold cyan]cross_folder 모드[/bold cyan]")
-            folder_files = {}
-            all_target_files = []
-            for f in folders:
-                files = []
-                if include_sub:
-                    for root_dir, dirs, fs in os.walk(f):
-                        for file in fs:
-                            full = os.path.join(root_dir, file)
-                            if os.path.isfile(full):
-                                files.append(full)
-                                all_target_files.append(full)
-                else:
-                    for file in os.listdir(f):
-                        full = os.path.join(f, file)
+def _collect_files_for_mode(folders, include_sub, search_mode):
+    if search_mode == "cross_folder":
+        folder_files = {}
+        all_target_files = []
+        for folder in folders:
+            files = []
+            if include_sub:
+                for root_dir, dirs, fs in os.walk(folder):
+                    for file in fs:
+                        full = os.path.join(root_dir, file)
                         if os.path.isfile(full):
                             files.append(full)
                             all_target_files.append(full)
-                folder_files[f] = files
-
-            # 로그: 폴더별 수집된 파일 수
-            # try:
-            #     counts = ", ".join(f"{k}:{len(v)}" for k, v in folder_files.items())
-            # except Exception:
-            #     counts = "(error)"
-            logger.info(f"total={len(all_target_files)}")
-
-            if max_compare_files > 0 and len(all_target_files) > max_compare_files:
-                selected = []
-                new_folder_files = {}
-                for folder, files in folder_files.items():
-                    if len(selected) >= max_compare_files:
-                        new_folder_files[folder] = []
-                        continue
-                    take = max_compare_files - len(selected)
-                    selected_files = files[:take]
-                    selected.extend(selected_files)
-                    new_folder_files[folder] = selected_files
-                folder_files = new_folder_files
-                all_target_files = selected
-                logger.info(f"[bold cyan][알림] 최대 비교 파일 수 {max_compare_files}개 적용됨: 비교 대상 {len(all_target_files)}개[/bold cyan]")
-
-            compare_file_paths = list(all_target_files)
-            processed_compare_files = get_processed_compare_files(method, hash_size)
-            new_compare_files, baseline_compare_files = select_incremental_compare_targets(compare_file_paths, processed_compare_files)
-            new_compare_files_set = set(new_compare_files)
-            if baseline_compare_files:
-                logger.info(f"[bold cyan][알림] 증분 비교 모드: 기준 파일 {len(baseline_compare_files)}개, 신규 파일 {len(new_compare_files)}개[/bold cyan]")
-            elif new_compare_files:
-                logger.info(f"[bold cyan][알림] 신규 파일 {len(new_compare_files)}개를 기준으로 비교를 시작합니다.[/bold cyan]")
             else:
-                logger.info("[bold cyan][알림] 새로 추가된 비교 대상이 없어 비교를 건너뜁니다.[/bold cyan]")
-                return _compare_result(total_duplicates, compare_file_paths, method, hash_size, max_hash_compute_files, stopped_early=False)
+                for file in os.listdir(folder):
+                    full = os.path.join(folder, file)
+                    if os.path.isfile(full):
+                        files.append(full)
+                        all_target_files.append(full)
+            folder_files[folder] = files
+        return folder_files, all_target_files
 
-            if is_stop_requested():
-                logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
-                return _compare_result(total_duplicates, compare_file_paths, method, hash_size, max_hash_compute_files, stopped_early=True)
-
-            logger.info(f"Precomputing hashes for {len(all_target_files)} files...")
-            batch_size = int(options.get("hash_precompute_batch_size", 1000))
-            hashes = precompute_hashes(all_target_files, method, hash_size, batch_size=batch_size, max_new_hashes=max_hash_compute_files)
-            valid = sum(1 for v in hashes.values() if v)
-            none_count = sum(1 for v in hashes.values() if v is None)
-            missing_count = len(all_target_files) - len(hashes)
-            logger.info(f"Hashes precomputed: entries={len(hashes)}, valid={valid}, none={none_count}, missing={missing_count}")
-
-            # Optional FAISS-based pre-scan for pHash/dHash if available
-            try:
-                if faiss_batch and method in ("phash", "dhash"):
-                    logger.info("Running FAISS pre-scan for near-duplicates...")
-                    faiss_pairs = faiss_batch.build_and_search_from_paths(all_target_files, hash_size=hash_size, threshold=1)
-                    logger.info(f"FAISS pre-scan found {len(faiss_pairs)} candidate duplicate pairs")
-                    for a, b in faiss_pairs:
-                        record_duplicate_pair(a, b)
-                        total_duplicates += 1
-                        if duplicate_limit > 0 and total_duplicates >= duplicate_limit:
-                            logger.warning(f"[bold yellow][중단][/bold yellow] 중복 {total_duplicates:,}건 도달로 비교를 중단합니다.")
-                            request_stop()
-                            break
-            except Exception:
-                logger.debug("FAISS pre-scan failed or not available; continuing")
-
-            # Optional FAISS-based pre-scan for pHash/dHash if available
-            try:
-                if faiss_batch and method in ("phash", "dhash"):
-                    logger.info("Running FAISS pre-scan for near-duplicates...")
-                    faiss_pairs = faiss_batch.build_and_search_from_paths(all_target_files, hash_size=hash_size, threshold=1)
-                    logger.info(f"FAISS pre-scan found {len(faiss_pairs)} candidate duplicate pairs")
-                    for a, b in faiss_pairs:
-                        record_duplicate_pair(a, b)
-                        total_duplicates += 1
-                        if duplicate_limit > 0 and total_duplicates >= duplicate_limit:
-                            logger.warning(f"[bold yellow][중단][/bold yellow] 중복 {total_duplicates:,}건 도달로 비교를 중단합니다.")
-                            request_stop()
-                            break
-            except Exception:
-                logger.debug("FAISS pre-scan failed or not available; continuing")
-
-            # Fast pre-detection using BK-tree (pHash/dHash) to short-circuit obvious near-duplicates
-            try:
-                if method in ("phash", "dhash"):
-                    logger.info("Running BK-tree pre-scan for near-duplicates...")
-                    bk_dups = find_near_duplicates_from_list(all_target_files, threshold=1, ratio_tol=aspect_ratio_tol, method="phash" if method=="phash" else "dhash", hash_size=hash_size)
-                    logger.info(f"BK-tree pre-scan found {len(bk_dups)} candidate duplicate pairs")
-                    for a, b, dist in bk_dups:
-                        record_duplicate_pair(a, b)
-                        total_duplicates += 1
-                        if duplicate_limit > 0 and total_duplicates >= duplicate_limit:
-                            logger.warning(f"[bold yellow][중단][/bold yellow] 중복 {total_duplicates:,}건 도달로 비교를 중단합니다.")
-                            request_stop()
-                            break
-            except Exception:
-                logger.debug("BK-tree pre-scan failed; continuing with normal compare")
-
-            # Fast pre-detection using BK-tree (pHash/dHash) to short-circuit obvious near-duplicates
-            try:
-                if method in ("phash", "dhash"):
-                    logger.info("Running BK-tree pre-scan for near-duplicates...")
-                    bk_dups = find_near_duplicates_from_list(all_target_files, threshold=1, ratio_tol=aspect_ratio_tol, method="phash" if method=="phash" else "dhash", hash_size=hash_size)
-                    logger.info(f"BK-tree pre-scan found {len(bk_dups)} candidate duplicate pairs")
-                    for a, b, dist in bk_dups:
-                        # in cross_folder mode, only keep pairs across different top-level folders
-                        def _top_folder(p):
-                            for key in folder_files:
-                                if os.path.commonpath([key, p]) == os.path.normpath(key):
-                                    return key
-                            return None
-
-                        ta = _top_folder(a)
-                        tb = _top_folder(b)
-                        if ta is not None and tb is not None and ta != tb:
-                            record_duplicate_pair(a, b)
-                            total_duplicates += 1
-                            if duplicate_limit > 0 and total_duplicates >= duplicate_limit:
-                                logger.warning(f"[bold yellow][중단][/bold yellow] 중복 {total_duplicates:,}건 도달로 비교를 중단합니다.")
-                                request_stop()
-                                break
-            except Exception:
-                logger.debug("BK-tree pre-scan failed; continuing with normal compare")
-
-            prefix_bits = get_hash_prefix_bits(hash_size)
-            bucket_index = build_hash_buckets(all_target_files, hashes, prefix_bits)
-            bucket_count = len(bucket_index)
-            max_bucket = max((len(v) for v in bucket_index.values()), default=0)
-            logger.info(f"Built {bucket_count} buckets (prefix_bits={prefix_bits}), max_bucket_size={max_bucket}")
-            candidates = collect_candidate_pairs(all_target_files, bucket_index)
-
-            if is_stop_requested():
-                logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
-                return _compare_result(total_duplicates, compare_file_paths, method, hash_size, max_hash_compute_files, stopped_early=True)
-
-            keys = list(folder_files.keys())
-            for i in range(len(keys)):
-                for j in range(i+1, len(keys)):
-                    f1, f2 = keys[i], keys[j]
-                    pending_files = [p for p in folder_files[f1] if p in new_compare_files_set]
-                    if pending_files:
-                        total_pairs += len(pending_files) * len(folder_files[f2])
-
-            logger.info(f"Starting cross_folder compare: total_pairs={total_pairs}, folders={len(keys)}")
-            log_interval = 1000 if total_pairs >= 5000 else max(1, total_pairs // 10)
-            verbose_single = total_pairs < 50
-
-            last_log_time = time.perf_counter()
-            last_log_count = 0
-
-            max_workers = min(32, max(1, (os.cpu_count() or 4) + 4))
-            executor = ThreadPoolExecutor(max_workers=max_workers)
-            futures = set()
-
-            def drain_futures(wait_all=False):
-                nonlocal total_compared, total_duplicates, last_log_time, last_log_count
-                if not futures:
-                    return False
-                done, _ = wait(futures, return_when=ALL_COMPLETED if wait_all else FIRST_COMPLETED)
-                stop_now = False
-                for fut in done:
-                    futures.discard(fut)
-                    if fut.cancelled():
-                        continue
-                    try:
-                        _, is_duplicate = fut.result()
-                    except Exception:
-                        continue
-                    total_compared += 1
-                    if is_duplicate:
-                        total_duplicates += 1
-                        if duplicate_limit > 0 and total_duplicates >= duplicate_limit:
-                            logger.warning(f"[bold yellow][중단][/bold yellow] 중복 {total_duplicates:,}건 도달로 비교를 중단합니다.")
-                            request_stop()
-                            stop_now = True
-                    if total_compared % log_interval == 0 or total_compared == total_pairs:
-                        now = time.perf_counter()
-                        interval_time = now - last_log_time
-                        interval_count = total_compared - last_log_count
-                        total_elapsed = now - start_time
-                        speed = interval_count / interval_time if interval_time > 0 else 0
-                        percent = (total_compared / total_pairs * 100) if total_pairs > 0 else 100.0
-
-                        logger.info(
-                            f"[bold cyan][진행 상황][/bold cyan] "
-                            f"[yellow]{total_compared:,}[/yellow] / {total_pairs:,}회 ({percent:.1f}%) | "
-                            f"중복 건수: {total_duplicates:,} | "
-                            f"최근 {interval_count:,}개: {interval_time:.2f}초 ({speed:.0f}개/초) | "
-                            f"전체 경과: {total_elapsed:.1f}초"
-                        )
-                        last_log_time = now
-                        last_log_count = total_compared
-                return stop_now
-
-            try:
-                for i in range(len(keys)):
-                    if is_stop_requested():
-                        break
-                    for j in range(i+1, len(keys)):
-                        if is_stop_requested():
-                            break
-                        f1, f2 = keys[i], keys[j]
-                        pending_files = [p for p in folder_files[f1] if p in new_compare_files_set]
-                        for file1 in pending_files:
-                            update_processed_compare_files(method, hash_size, [file1])
-                            if is_stop_requested():
-                                break
-                            batch = []
-                            for file2 in folder_files[f2]:
-                                if is_stop_requested():
-                                    break
-                                batch.append(file2)
-                                if len(batch) >= max_workers * 4:
-                                    filtered = filter_batch_candidates(file1, batch, candidates)
-                                    if filtered:
-                                        futures.add(executor.submit(compare_file_with_list, file1, filtered, method, hash_size, tolerance, verbose=verbose_single, use_compare_cache=use_compare_cache, duplicate_limit=duplicate_limit, hashes=hashes))
-                                    batch = []
-                            if batch:
-                                filtered = filter_batch_candidates(file1, batch, candidates)
-                                if filtered:
-                                    futures.add(executor.submit(compare_file_with_list, file1, filtered, method, hash_size, tolerance, verbose=verbose_single, use_compare_cache=use_compare_cache, duplicate_limit=duplicate_limit, hashes=hashes))
-                            if len(futures) >= max_workers * 2:
-                                if drain_futures():
-                                    break
-                        if is_stop_requested():
-                            break
-                    if is_stop_requested():
-                        break
-                if not is_stop_requested():
-                    drain_futures(wait_all=True)
-            finally:
-                for fut in futures:
-                    fut.cancel()
-                executor.shutdown(wait=False)
-
+    all_files = []
+    for folder in folders:
+        if include_sub:
+            for root_dir, dirs, fs in os.walk(folder):
+                for file in fs:
+                    full = os.path.join(root_dir, file)
+                    if os.path.isfile(full):
+                        all_files.append(full)
         else:
-            logger.info("[bold cyan][all_folders 모드][/bold cyan]")
-            all_files = []
-            for f in folders:
-                if include_sub:
-                    for root_dir, dirs, fs in os.walk(f):
-                        for file in fs:
-                            full = os.path.join(root_dir, file)
-                            if os.path.isfile(full):
-                                all_files.append(full)
-                else:
-                    for file in os.listdir(f):
-                        full = os.path.join(f, file)
-                        if os.path.isfile(full):
-                            all_files.append(full)
+            for file in os.listdir(folder):
+                full = os.path.join(folder, file)
+                if os.path.isfile(full):
+                    all_files.append(full)
+    return None, all_files
 
-            if max_compare_files > 0 and len(all_files) > max_compare_files:
-                all_files = all_files[:max_compare_files]
-                logger.info(f"[bold cyan][알림] 최대 비교 파일 수 {max_compare_files}개 적용됨: 비교 대상 {len(all_files)}개[/bold cyan]")
 
-            compare_file_paths = list(all_files)
-            processed_compare_files = get_processed_compare_files(method, hash_size)
-            new_compare_files, baseline_compare_files = select_incremental_compare_targets(compare_file_paths, processed_compare_files)
-            new_compare_files_set = set(new_compare_files)
-            if baseline_compare_files:
-                logger.info(f"[bold cyan][알림] 증분 비교 모드: 기준 파일 {len(baseline_compare_files)}개, 신규 파일 {len(new_compare_files)}개[/bold cyan]")
-            elif new_compare_files:
-                logger.info(f"[bold cyan][알림] 신규 파일 {len(new_compare_files)}개를 기준으로 비교를 시작합니다.[/bold cyan]")
-            else:
-                logger.info("[bold cyan][알림] 새로 추가된 비교 대상이 없어 비교를 건너뜁니다.[/bold cyan]")
-                return _compare_result(total_duplicates, compare_file_paths, method, hash_size, max_hash_compute_files, stopped_early=False)
+def _apply_max_compare_files(search_mode, folder_files, all_files, max_compare_files):
+    if max_compare_files <= 0:
+        return folder_files, all_files
+    if search_mode == "cross_folder":
+        selected = []
+        new_folder_files = {}
+        for folder, files in folder_files.items():
+            if len(selected) >= max_compare_files:
+                new_folder_files[folder] = []
+                continue
+            take = max_compare_files - len(selected)
+            selected_files = files[:take]
+            selected.extend(selected_files)
+            new_folder_files[folder] = selected_files
+        return new_folder_files, selected
+    return None, all_files[:max_compare_files]
 
-            if is_stop_requested():
-                logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
-                return _compare_result(total_duplicates, compare_file_paths, method, hash_size, max_hash_compute_files, stopped_early=True)
 
-            logger.info(f"Precomputing hashes for {len(all_files)} files...")
-            batch_size = int(options.get("hash_precompute_batch_size", 1000))
-            hashes = precompute_hashes(all_files, method, hash_size, batch_size=batch_size, max_new_hashes=max_hash_compute_files)
-            valid = sum(1 for v in hashes.values() if v)
-            none_count = sum(1 for v in hashes.values() if v is None)
-            missing_count = len(all_files) - len(hashes)
-            logger.info(f"Hashes precomputed: entries={len(hashes)}, valid={valid}, none={none_count}, missing={missing_count}")
+def _prepare_incremental_targets(compare_file_paths, method, hash_size):
+    processed_compare_files = get_processed_compare_files(method, hash_size)
+    new_compare_files, baseline_compare_files = select_incremental_compare_targets(compare_file_paths, processed_compare_files)
+    return set(new_compare_files), baseline_compare_files, new_compare_files
 
-            prefix_bits = get_hash_prefix_bits(hash_size)
-            bucket_index = build_hash_buckets(all_files, hashes, prefix_bits)
-            bucket_count = len(bucket_index)
-            max_bucket = max((len(v) for v in bucket_index.values()), default=0)
-            logger.info(f"Built {bucket_count} buckets (prefix_bits={prefix_bits}), max_bucket_size={max_bucket}")
-            candidates = collect_candidate_pairs(all_files, bucket_index)
 
-            if is_stop_requested():
-                logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
-                return _compare_result(total_duplicates, compare_file_paths, method, hash_size, max_hash_compute_files, stopped_early=True)
+def _run_pre_scan_steps(all_target_files, method, hash_size, aspect_ratio_tol, duplicate_limit, total_duplicates):
+    try:
+        if faiss_batch and method in ("phash", "dhash"):
+            logger.info("Running FAISS pre-scan for near-duplicates...")
+            faiss_pairs = faiss_batch.build_and_search_from_paths(all_target_files, hash_size=hash_size, threshold=1)
+            logger.info(f"FAISS pre-scan found {len(faiss_pairs)} candidate duplicate pairs")
+            for a, b in faiss_pairs:
+                record_duplicate_pair(a, b)
+                total_duplicates += 1
+                if duplicate_limit > 0 and total_duplicates >= duplicate_limit:
+                    logger.warning(f"[bold yellow][중단][/bold yellow] 중복 {total_duplicates:,}건 도달로 비교를 중단합니다.")
+                    request_stop()
+                    return total_duplicates, True
+    except Exception:
+        logger.debug("FAISS pre-scan failed or not available; continuing")
 
-            n = len(all_files)
-            pending_files = [p for p in all_files if p in new_compare_files_set]
-            total_pairs = max(0, len(pending_files) * (n - 1))
+    try:
+        if faiss_batch and method in ("phash", "dhash"):
+            logger.info("Running FAISS pre-scan for near-duplicates...")
+            faiss_pairs = faiss_batch.build_and_search_from_paths(all_target_files, hash_size=hash_size, threshold=1)
+            logger.info(f"FAISS pre-scan found {len(faiss_pairs)} candidate duplicate pairs")
+            for a, b in faiss_pairs:
+                record_duplicate_pair(a, b)
+                total_duplicates += 1
+                if duplicate_limit > 0 and total_duplicates >= duplicate_limit:
+                    logger.warning(f"[bold yellow][중단][/bold yellow] 중복 {total_duplicates:,}건 도달로 비교를 중단합니다.")
+                    request_stop()
+                    return total_duplicates, True
+    except Exception:
+        logger.debug("FAISS pre-scan failed or not available; continuing")
 
-            logger.info(f"Starting all_folders compare: total_pairs={total_pairs}, files={n}, pending_files={len(pending_files)}")
-            log_interval = 1000 if total_pairs >= 5000 else max(1, total_pairs // 10)
-            verbose_single = total_pairs < 50
+    try:
+        if method in ("phash", "dhash"):
+            logger.info("Running BK-tree pre-scan for near-duplicates...")
+            bk_dups = find_near_duplicates_from_list(all_target_files, threshold=1, ratio_tol=aspect_ratio_tol, method="phash" if method == "phash" else "dhash", hash_size=hash_size)
+            logger.info(f"BK-tree pre-scan found {len(bk_dups)} candidate duplicate pairs")
+            for a, b, dist in bk_dups:
+                record_duplicate_pair(a, b)
+                total_duplicates += 1
+                if duplicate_limit > 0 and total_duplicates >= duplicate_limit:
+                    logger.warning(f"[bold yellow][중단][/bold yellow] 중복 {total_duplicates:,}건 도달로 비교를 중단합니다.")
+                    request_stop()
+                    return total_duplicates, True
+    except Exception:
+        logger.debug("BK-tree pre-scan failed; continuing with normal compare")
 
-            last_log_time = time.perf_counter()
-            last_log_count = 0
+    try:
+        if method in ("phash", "dhash"):
+            logger.info("Running BK-tree pre-scan for near-duplicates...")
+            bk_dups = find_near_duplicates_from_list(all_target_files, threshold=1, ratio_tol=aspect_ratio_tol, method="phash" if method == "phash" else "dhash", hash_size=hash_size)
+            logger.info(f"BK-tree pre-scan found {len(bk_dups)} candidate duplicate pairs")
+            for a, b, dist in bk_dups:
+                def _top_folder(p):
+                    for key in all_target_files:
+                        if p == key:
+                            return "root"
+                    return None
+                ta = _top_folder(a)
+                tb = _top_folder(b)
+                if ta is not None and tb is not None and ta != tb:
+                    record_duplicate_pair(a, b)
+                    total_duplicates += 1
+                    if duplicate_limit > 0 and total_duplicates >= duplicate_limit:
+                        logger.warning(f"[bold yellow][중단][/bold yellow] 중복 {total_duplicates:,}건 도달로 비교를 중단합니다.")
+                        request_stop()
+                        return total_duplicates, True
+    except Exception:
+        logger.debug("BK-tree pre-scan failed; continuing with normal compare")
 
-            max_workers = min(32, max(1, (os.cpu_count() or 4) + 4))
-            executor = ThreadPoolExecutor(max_workers=max_workers)
-            futures = set()
+    return total_duplicates, False
 
-            def drain_futures(wait_all=False):
-                nonlocal total_compared, total_duplicates, last_log_time, last_log_count
-                if not futures:
-                    return False
-                done, _ = wait(futures, return_when=ALL_COMPLETED if wait_all else FIRST_COMPLETED)
-                stop_now = False
-                for fut in done:
-                    futures.discard(fut)
-                    if fut.cancelled():
-                        continue
-                    try:
-                        _, is_duplicate = fut.result()
-                    except Exception:
-                        continue
-                    total_compared += 1
-                    if is_duplicate:
-                        total_duplicates += 1
-                        if duplicate_limit > 0 and total_duplicates >= duplicate_limit:
-                            logger.warning(f"[bold yellow][중단][/bold yellow] 중복 {total_duplicates:,}건 도달로 비교를 중단합니다.")
-                            request_stop()
-                            stop_now = True
-                    if total_compared % log_interval == 0 or total_compared == total_pairs:
-                        now = time.perf_counter()
-                        interval_time = now - last_log_time
-                        interval_count = total_compared - last_log_count
-                        total_elapsed = now - start_time
-                        speed = interval_count / interval_time if interval_time > 0 else 0
-                        percent = (total_compared / total_pairs * 100) if total_pairs > 0 else 100.0
 
-                        logger.info(
-                            f"[bold cyan][진행 상황][/bold cyan] "
-                            f"[yellow]{total_compared:,}[/yellow] / {total_pairs:,}회 ({percent:.1f}%) | "
-                            f"최근 {interval_count:,}개: {interval_time:.2f}초 ({speed:.0f}개/초) | "
-                            f"전체 경과: {total_elapsed:.1f}초"
-                        )
-                        last_log_time = now
-                        last_log_count = total_compared
-                return stop_now
+def _run_cross_folder_compare(folder_files, new_compare_files_set, hashes, candidates, method, hash_size, tolerance, duplicate_limit, use_compare_cache, start_time, log_interval, verbose_single):
+    total_compared = 0
+    total_duplicates = 0
+    total_pairs = 0
+    keys = list(folder_files.keys())
+    for i in range(len(keys)):
+        for j in range(i + 1, len(keys)):
+            f1, f2 = keys[i], keys[j]
+            pending_files = [p for p in folder_files[f1] if p in new_compare_files_set]
+            if pending_files:
+                total_pairs += len(pending_files) * len(folder_files[f2])
 
+    last_log_time = time.perf_counter()
+    last_log_count = 0
+    max_workers = min(32, max(1, (os.cpu_count() or 4) + 4))
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    futures = set()
+
+    def drain_futures(wait_all=False):
+        nonlocal total_compared, total_duplicates, last_log_time, last_log_count
+        if not futures:
+            return False
+        done, _ = wait(futures, return_when=ALL_COMPLETED if wait_all else FIRST_COMPLETED)
+        stop_now = False
+        for fut in done:
+            futures.discard(fut)
+            if fut.cancelled():
+                continue
             try:
+                _, is_duplicate = fut.result()
+            except Exception:
+                continue
+            total_compared += 1
+            if is_duplicate:
+                total_duplicates += 1
+                if duplicate_limit > 0 and total_duplicates >= duplicate_limit:
+                    logger.warning(f"[bold yellow][중단][/bold yellow] 중복 {total_duplicates:,}건 도달로 비교를 중단합니다.")
+                    request_stop()
+                    stop_now = True
+            if total_compared % log_interval == 0 or total_compared == total_pairs:
+                now = time.perf_counter()
+                interval_time = now - last_log_time
+                interval_count = total_compared - last_log_count
+                total_elapsed = now - start_time
+                speed = interval_count / interval_time if interval_time > 0 else 0
+                percent = (total_compared / total_pairs * 100) if total_pairs > 0 else 100.0
+                logger.info(
+                    f"[bold cyan][진행 상황][/bold cyan] "
+                    f"[yellow]{total_compared:,}[/yellow] / {total_pairs:,}회 ({percent:.1f}%) | "
+                    f"중복 건수: {total_duplicates:,} | "
+                    f"최근 {interval_count:,}개: {interval_time:.2f}초 ({speed:.0f}개/초) | "
+                    f"전체 경과: {total_elapsed:.1f}초"
+                )
+                last_log_time = now
+                last_log_count = total_compared
+        return stop_now
+
+    try:
+        for i in range(len(keys)):
+            if is_stop_requested():
+                break
+            for j in range(i + 1, len(keys)):
+                if is_stop_requested():
+                    break
+                f1, f2 = keys[i], keys[j]
+                pending_files = [p for p in folder_files[f1] if p in new_compare_files_set]
                 for file1 in pending_files:
+                    update_processed_compare_files(method, hash_size, [file1])
                     if is_stop_requested():
                         break
-                    update_processed_compare_files(method, hash_size, [file1])
                     batch = []
-                    for file2 in all_files:
-                        if file2 == file1:
-                            continue
+                    for file2 in folder_files[f2]:
                         if is_stop_requested():
                             break
                         batch.append(file2)
@@ -1302,15 +1138,270 @@ def try_compare(folder_list):
                         filtered = filter_batch_candidates(file1, batch, candidates)
                         if filtered:
                             futures.add(executor.submit(compare_file_with_list, file1, filtered, method, hash_size, tolerance, verbose=verbose_single, use_compare_cache=use_compare_cache, duplicate_limit=duplicate_limit, hashes=hashes))
-                    if len(futures) >= max_workers * 2:
-                        if drain_futures():
-                            break
-                if not is_stop_requested():
-                    drain_futures(wait_all=True)
-            finally:
-                for fut in futures:
-                    fut.cancel()
-                executor.shutdown(wait=False)
+                    if len(futures) >= max_workers * 2 and drain_futures():
+                        break
+                if is_stop_requested():
+                    break
+            if is_stop_requested():
+                break
+        if not is_stop_requested():
+            drain_futures(wait_all=True)
+    finally:
+        for fut in futures:
+            fut.cancel()
+        executor.shutdown(wait=False)
+
+    return total_compared, total_duplicates, total_pairs
+
+
+def _run_all_folder_compare(all_files, new_compare_files_set, hashes, candidates, method, hash_size, tolerance, duplicate_limit, use_compare_cache, start_time, log_interval, verbose_single):
+    total_compared = 0
+    total_duplicates = 0
+    total_pairs = max(0, len([p for p in all_files if p in new_compare_files_set]) * (len(all_files) - 1))
+    last_log_time = time.perf_counter()
+    last_log_count = 0
+    max_workers = min(32, max(1, (os.cpu_count() or 4) + 4))
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    futures = set()
+
+    def drain_futures(wait_all=False):
+        nonlocal total_compared, total_duplicates, last_log_time, last_log_count
+        if not futures:
+            return False
+        done, _ = wait(futures, return_when=ALL_COMPLETED if wait_all else FIRST_COMPLETED)
+        stop_now = False
+        for fut in done:
+            futures.discard(fut)
+            if fut.cancelled():
+                continue
+            try:
+                _, is_duplicate = fut.result()
+            except Exception:
+                continue
+            total_compared += 1
+            if is_duplicate:
+                total_duplicates += 1
+                if duplicate_limit > 0 and total_duplicates >= duplicate_limit:
+                    logger.warning(f"[bold yellow][중단][/bold yellow] 중복 {total_duplicates:,}건 도달로 비교를 중단합니다.")
+                    request_stop()
+                    stop_now = True
+            if total_compared % log_interval == 0 or total_compared == total_pairs:
+                now = time.perf_counter()
+                interval_time = now - last_log_time
+                interval_count = total_compared - last_log_count
+                total_elapsed = now - start_time
+                speed = interval_count / interval_time if interval_time > 0 else 0
+                percent = (total_compared / total_pairs * 100) if total_pairs > 0 else 100.0
+                logger.info(
+                    f"[bold cyan][진행 상황][/bold cyan] "
+                    f"[yellow]{total_compared:,}[/yellow] / {total_pairs:,}회 ({percent:.1f}%) | "
+                    f"중복 건수: {total_duplicates:,} | "
+                    f"최근 {interval_count:,}개: {interval_time:.2f}초 ({speed:.0f}개/초) | "
+                    f"전체 경과: {total_elapsed:.1f}초"
+                )
+                last_log_time = now
+                last_log_count = total_compared
+        return stop_now
+
+    try:
+        for file1 in [p for p in all_files if p in new_compare_files_set]:
+            if is_stop_requested():
+                break
+            update_processed_compare_files(method, hash_size, [file1])
+            batch = []
+            for file2 in all_files:
+                if file2 == file1:
+                    continue
+                if is_stop_requested():
+                    break
+                batch.append(file2)
+                if len(batch) >= max_workers * 4:
+                    filtered = filter_batch_candidates(file1, batch, candidates)
+                    if filtered:
+                        futures.add(executor.submit(compare_file_with_list, file1, filtered, method, hash_size, tolerance, verbose=verbose_single, use_compare_cache=use_compare_cache, duplicate_limit=duplicate_limit, hashes=hashes))
+                    batch = []
+            if batch:
+                filtered = filter_batch_candidates(file1, batch, candidates)
+                if filtered:
+                    futures.add(executor.submit(compare_file_with_list, file1, filtered, method, hash_size, tolerance, verbose=verbose_single, use_compare_cache=use_compare_cache, duplicate_limit=duplicate_limit, hashes=hashes))
+            if len(futures) >= max_workers * 2 and drain_futures():
+                break
+        if not is_stop_requested():
+            drain_futures(wait_all=True)
+    finally:
+        for fut in futures:
+            fut.cancel()
+        executor.shutdown(wait=False)
+
+    return total_compared, total_duplicates, total_pairs
+
+
+def _run_compare_branch(search_mode, folders, include_sub, options, method, hash_size, tolerance, duplicate_limit, max_compare_files, max_hash_compute_files, use_compare_cache, start_time, aspect_ratio_tol, tolerance_rate):
+    total_compared = 0
+    total_duplicates = 0
+    total_pairs = 0
+    compare_file_paths = []
+
+    if search_mode == "cross_folder":
+        logger.info("[bold cyan]cross_folder 모드[/bold cyan]")
+        folder_files, all_target_files = _collect_files_for_mode(folders, include_sub, search_mode)
+        logger.info(f"total={len(all_target_files)}")
+        folder_files, all_target_files = _apply_max_compare_files(search_mode, folder_files, all_target_files, max_compare_files)
+        compare_file_paths = list(all_target_files)
+        new_compare_files_set, baseline_compare_files, new_compare_files = _prepare_incremental_targets(compare_file_paths, method, hash_size)
+        if baseline_compare_files:
+            logger.info(f"[bold cyan][알림] 증분 비교 모드: 기준 파일 {len(baseline_compare_files)}개, 신규 파일 {len(new_compare_files)}개[/bold cyan]")
+        elif new_compare_files:
+            logger.info(f"[bold cyan][알림] 신규 파일 {len(new_compare_files)}개를 기준으로 비교를 시작합니다.[/bold cyan]")
+        else:
+            logger.info("[bold cyan][알림] 새로 추가된 비교 대상이 없어 비교를 건너뜁니다.[/bold cyan]")
+            return 0, total_duplicates, 0, compare_file_paths
+
+        if is_stop_requested():
+            logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
+            return 0, total_duplicates, 0, compare_file_paths
+
+        logger.info(f"Precomputing hashes for {len(all_target_files)} files...")
+        hashes = precompute_hashes(all_target_files, method, hash_size, batch_size=options.get("hash_precompute_batch_size", 1000), max_new_hashes=max_hash_compute_files)
+        valid = sum(1 for v in hashes.values() if v)
+        none_count = sum(1 for v in hashes.values() if v is None)
+        missing_count = len(all_target_files) - len(hashes)
+        logger.info(f"Hashes precomputed: entries={len(hashes)}, valid={valid}, none={none_count}, missing={missing_count}")
+
+        total_duplicates, stopped = _run_pre_scan_steps(all_target_files, method, hash_size, aspect_ratio_tol, duplicate_limit, total_duplicates)
+        if stopped:
+            return 0, total_duplicates, 0, compare_file_paths
+
+        prefix_bits = get_hash_prefix_bits(hash_size)
+        bucket_index = build_hash_buckets(all_target_files, hashes, prefix_bits)
+        bucket_count = len(bucket_index)
+        max_bucket = max((len(v) for v in bucket_index.values()), default=0)
+        logger.info(f"Built {bucket_count} buckets (prefix_bits={prefix_bits}), max_bucket_size={max_bucket}")
+        candidates = collect_candidate_pairs(all_target_files, bucket_index)
+
+        if is_stop_requested():
+            logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
+            return 0, total_duplicates, 0, compare_file_paths
+
+        total_compared, total_duplicates, total_pairs = _run_cross_folder_compare(
+            folder_files,
+            new_compare_files_set,
+            hashes,
+            candidates,
+            method,
+            hash_size,
+            tolerance,
+            duplicate_limit,
+            use_compare_cache,
+            start_time,
+            1000 if total_pairs >= 5000 else max(1, total_pairs // 10),
+            total_pairs < 50,
+        )
+    else:
+        logger.info("[bold cyan][all_folders 모드][/bold cyan]")
+        _, all_files = _collect_files_for_mode(folders, include_sub, search_mode)
+        _, all_files = _apply_max_compare_files(search_mode, None, all_files, max_compare_files)
+        compare_file_paths = list(all_files)
+        new_compare_files_set, baseline_compare_files, new_compare_files = _prepare_incremental_targets(compare_file_paths, method, hash_size)
+        if baseline_compare_files:
+            logger.info(f"[bold cyan][알림] 증분 비교 모드: 기준 파일 {len(baseline_compare_files)}개, 신규 파일 {len(new_compare_files)}개[/bold cyan]")
+        elif new_compare_files:
+            logger.info(f"[bold cyan][알림] 신규 파일 {len(new_compare_files)}개를 기준으로 비교를 시작합니다.[/bold cyan]")
+        else:
+            logger.info("[bold cyan][알림] 새로 추가된 비교 대상이 없어 비교를 건너뜁니다.[/bold cyan]")
+            return 0, total_duplicates, 0, compare_file_paths
+
+        if is_stop_requested():
+            logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
+            return 0, total_duplicates, 0, compare_file_paths
+
+        logger.info(f"Precomputing hashes for {len(all_files)} files...")
+        hashes = precompute_hashes(all_files, method, hash_size, batch_size=options.get("hash_precompute_batch_size", 1000), max_new_hashes=max_hash_compute_files)
+        valid = sum(1 for v in hashes.values() if v)
+        none_count = sum(1 for v in hashes.values() if v is None)
+        missing_count = len(all_files) - len(hashes)
+        logger.info(f"Hashes precomputed: entries={len(hashes)}, valid={valid}, none={none_count}, missing={missing_count}")
+
+        prefix_bits = get_hash_prefix_bits(hash_size)
+        bucket_index = build_hash_buckets(all_files, hashes, prefix_bits)
+        bucket_count = len(bucket_index)
+        max_bucket = max((len(v) for v in bucket_index.values()), default=0)
+        logger.info(f"Built {bucket_count} buckets (prefix_bits={prefix_bits}), max_bucket_size={max_bucket}")
+        candidates = collect_candidate_pairs(all_files, bucket_index)
+
+        if is_stop_requested():
+            logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
+            return 0, total_duplicates, 0, compare_file_paths
+
+        n = len(all_files)
+        pending_files = [p for p in all_files if p in new_compare_files_set]
+        total_pairs = max(0, len(pending_files) * (n - 1))
+        logger.info(f"Starting all_folders compare: total_pairs={total_pairs}, files={n}, pending_files={len(pending_files)}")
+        log_interval = 1000 if total_pairs >= 5000 else max(1, total_pairs // 10)
+        verbose_single = total_pairs < 50
+        total_compared, total_duplicates, total_pairs = _run_all_folder_compare(
+            all_files,
+            new_compare_files_set,
+            hashes,
+            candidates,
+            method,
+            hash_size,
+            tolerance,
+            duplicate_limit,
+            use_compare_cache,
+            start_time,
+            log_interval,
+            verbose_single,
+        )
+
+    return total_compared, total_duplicates, total_pairs, compare_file_paths
+
+
+def try_compare(folder_list):
+    reset_stop()
+    start_time = time.perf_counter()
+    logger.info("[bold yellow][비교 시작][/bold yellow]")
+    options = load_config()
+    compare_options = _resolve_compare_options(options)
+    search_mode = compare_options["search_mode"]
+    include_sub = compare_options["include_sub"]
+    method = compare_options["method"]
+    hash_size = compare_options["hash_size"]
+    tolerance_rate = compare_options["tolerance_rate"]
+    tolerance = compare_options["tolerance"]
+    duplicate_limit = compare_options["duplicate_limit"]
+    max_compare_files = compare_options["max_compare_files"]
+    max_hash_compute_files = compare_options["max_hash_compute_files"]
+    save_duplicate_results = compare_options["save_duplicate_results"]
+    use_compare_cache = compare_options["use_compare_cache"]
+    aspect_ratio_tol = compare_options["aspect_ratio_tol"]
+    logger.info(f"Options: mode={search_mode}, include_sub={include_sub}, method={method}, hash_size={hash_size}, tolerance={tolerance} ({tolerance_rate}), duplicate_limit={duplicate_limit}, max_compare_files={max_compare_files}, max_hash_compute_files={max_hash_compute_files}, save_results={save_duplicate_results}, load_saved_results={compare_options['load_saved_results']}, auto_open={compare_options['auto_open_duplicate_results']}, use_compare_cache={use_compare_cache}")
+
+    if compare_options["load_saved_results"]:
+        groups = load_duplicate_results_json(method, hash_size, aspect_ratio_tol, tolerance_rate)
+        if groups:
+            logger.info(f"[bold cyan][알림] 이전 저장된 중복 결과 {len(groups)}개 그룹을 불러왔습니다.")
+
+    folders = [entry.split(": ", 1)[1] for entry in folder_list.get(0, "end")]
+    init_db()
+
+    try:
+        total_compared, total_duplicates, total_pairs, compare_file_paths = _run_compare_branch(
+            search_mode,
+            folders,
+            include_sub,
+            options,
+            method,
+            hash_size,
+            tolerance,
+            duplicate_limit,
+            max_compare_files,
+            max_hash_compute_files,
+            use_compare_cache,
+            start_time,
+            aspect_ratio_tol,
+            tolerance_rate,
+        )
 
         elapsed_time = time.perf_counter() - start_time
         if is_stop_requested():
