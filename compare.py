@@ -64,7 +64,7 @@ progress_write_queue = []
 duplicate_write_queue = []
 db_write_thread = None
 DB_WRITE_FLUSH_INTERVAL = 2.0
-DB_WRITE_BATCH_SIZE = 100
+DB_WRITE_BATCH_SIZE = 1000
 
 # 해시 계산 프로세스 풀
 hash_process_pool = None
@@ -568,7 +568,8 @@ def make_pair_key(file1, file2):
 def already_compared(file1, file2, method, hash_size):
     """
     이미 비교된 파일 쌍인지 확인.
-    메모리 캐시 → DB 순으로 조회.
+    - _compare_cache_loaded=True (선로드 완료): 메모리에서만 확인, miss면 None 반환 (DB 조회 없음)
+    - _compare_cache_loaded=False: DB에서 조회
     """
     f1, f2 = make_pair_key(file1, file2)
     cache_key = (f1, f2, method, hash_size)
@@ -577,6 +578,10 @@ def already_compared(file1, file2, method, hash_size):
     with compare_memory_lock:
         if cache_key in compare_memory_cache:
             return compare_memory_cache[cache_key]
+
+    # 선로드 완료 시: DB 조회 생략 (비교 결과는 add_compare_record로 메모리+비동기 DB 저장)
+    if _compare_cache_loaded:
+        return None
 
     # DB 확인
     conn = sqlite3.connect(DB_FILE)
