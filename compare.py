@@ -51,6 +51,11 @@ def select_incremental_compare_targets(current_paths, previous_paths):
     return new_files, baseline
 
 
+def select_hash_precompute_targets(current_paths, previous_paths):
+    new_files, _ = select_incremental_compare_targets(current_paths, previous_paths)
+    return new_files
+
+
 def get_processed_compare_files(method, hash_size):
     key = _compare_progress_key(method, hash_size)
     with compare_progress_lock:
@@ -536,7 +541,7 @@ def _query_cached_hashes(paths, method, hash_size):
     return cached
 
 
-def precompute_hashes(paths, method, hash_size, batch_size=1000, max_new_hashes=0):
+def precompute_hashes(paths, method, hash_size, batch_size=1000, max_new_hashes=0, previous_paths=None):
     unique_paths = list(dict.fromkeys(paths))
     hashes = {}
     missing = []
@@ -548,6 +553,11 @@ def precompute_hashes(paths, method, hash_size, batch_size=1000, max_new_hashes=
                 hashes[path] = hash_cache[key]
             else:
                 missing.append(path)
+
+    if previous_paths is not None:
+        new_paths = select_hash_precompute_targets(unique_paths, previous_paths)
+        missing = [p for p in missing if p in new_paths]
+        logger.info(f"[bold cyan][알림] 증분 비교 기준으로 새 해시 계산 대상 {len(missing)}개만 선택했습니다.[/bold cyan]")
 
     if missing:
         db_hashes = _query_cached_hashes(missing, method, hash_size)
@@ -579,7 +589,6 @@ def precompute_hashes(paths, method, hash_size, batch_size=1000, max_new_hashes=
                     process_pool.submit(compute_hash_worker, path, method, hash_size): path
                     for path in batch_paths
                 }
-                # logger.info(f"[bold cyan][알림] {len(futures)}개의 해시 계산을 시작합니다...[/bold cyan]")
                 pending = set(futures)
                 while pending:
                     if is_stop_requested():
@@ -1054,6 +1063,14 @@ def _run_pre_scan_steps(all_target_files, method, hash_size, aspect_ratio_tol, d
     return total_duplicates, False
 
 
+def _calculate_log_interval(total_pairs):
+    if total_pairs <= 0:
+        return 1
+    if total_pairs >= 5000:
+        return 1000
+    return max(1, total_pairs // 10)
+
+
 def _run_cross_folder_compare(folder_files, new_compare_files_set, hashes, candidates, method, hash_size, tolerance, duplicate_limit, use_compare_cache, start_time, log_interval, verbose_single):
     total_compared = 0
     total_duplicates = 0
@@ -1262,7 +1279,14 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
             return 0, total_duplicates, 0, compare_file_paths
 
         logger.info(f"Precomputing hashes for {len(all_target_files)} files...")
-        hashes = precompute_hashes(all_target_files, method, hash_size, batch_size=options.get("hash_precompute_batch_size", 1000), max_new_hashes=max_hash_compute_files)
+        hashes = precompute_hashes(
+            all_target_files,
+            method,
+            hash_size,
+            batch_size=options.get("hash_precompute_batch_size", 1000),
+            max_new_hashes=max_hash_compute_files,
+            previous_paths=get_processed_compare_files(method, hash_size),
+        )
         valid = sum(1 for v in hashes.values() if v)
         none_count = sum(1 for v in hashes.values() if v is None)
         missing_count = len(all_target_files) - len(hashes)
@@ -1294,7 +1318,7 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
             duplicate_limit,
             use_compare_cache,
             start_time,
-            1000 if total_pairs >= 5000 else max(1, total_pairs // 10),
+            _calculate_log_interval(total_pairs),
             total_pairs < 50,
         )
     else:
@@ -1316,7 +1340,14 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
             return 0, total_duplicates, 0, compare_file_paths
 
         logger.info(f"Precomputing hashes for {len(all_files)} files...")
-        hashes = precompute_hashes(all_files, method, hash_size, batch_size=options.get("hash_precompute_batch_size", 1000), max_new_hashes=max_hash_compute_files)
+        hashes = precompute_hashes(
+            all_files,
+            method,
+            hash_size,
+            batch_size=options.get("hash_precompute_batch_size", 1000),
+            max_new_hashes=max_hash_compute_files,
+            previous_paths=get_processed_compare_files(method, hash_size),
+        )
         valid = sum(1 for v in hashes.values() if v)
         none_count = sum(1 for v in hashes.values() if v is None)
         missing_count = len(all_files) - len(hashes)
@@ -1337,7 +1368,7 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
         pending_files = [p for p in all_files if p in new_compare_files_set]
         total_pairs = max(0, len(pending_files) * (n - 1))
         logger.info(f"Starting all_folders compare: total_pairs={total_pairs}, files={n}, pending_files={len(pending_files)}")
-        log_interval = 1000 if total_pairs >= 5000 else max(1, total_pairs // 10)
+        log_interval = _calculate_log_interval(total_pairs)
         verbose_single = total_pairs < 50
         total_compared, total_duplicates, total_pairs = _run_all_folder_compare(
             all_files,
