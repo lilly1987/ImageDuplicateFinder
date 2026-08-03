@@ -1190,13 +1190,18 @@ def _collect_files_for_mode(folders, include_sub, search_mode):
     return None, all_files
 
 
-def _apply_max_compare_files(search_mode, folder_files, all_files, max_compare_files):
+def _apply_max_compare_files(search_mode, folder_files, all_files, max_compare_files, method, hash_size):
     """
     max_compare_files 적용.
     0 초과 시 기존 비교 파일쌍 제외하고 추가로 비교할 파일 갯수.
+    - compare_progress에 이미 처리된 파일은 제외하고 신규 파일만 선택
     """
     if max_compare_files <= 0:
         return folder_files, all_files
+
+    # 이미 처리된 파일 목록 조회 (증분 비교)
+    processed_set = set(get_processed_compare_files(method, hash_size))
+
     if search_mode == "cross_folder":
         selected = []
         new_folder_files = {}
@@ -1204,12 +1209,17 @@ def _apply_max_compare_files(search_mode, folder_files, all_files, max_compare_f
             if len(selected) >= max_compare_files:
                 new_folder_files[folder] = []
                 continue
+            # 이미 처리된 파일 제외하고 신규 파일만 선택
+            pending_files = [f for f in files if f not in processed_set]
             take = max_compare_files - len(selected)
-            selected_files = files[:take]
+            selected_files = pending_files[:take]
             selected.extend(selected_files)
             new_folder_files[folder] = selected_files
         return new_folder_files, selected
-    return None, all_files[:max_compare_files]
+
+    # all_folders 모드: 이미 처리된 파일 제외하고 신규 파일만 선택
+    pending_files = [f for f in all_files if f not in processed_set]
+    return None, pending_files[:max_compare_files]
 
 
 # ============================================================
@@ -1505,7 +1515,7 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
         logger.info(f"total={len(all_target_files)}")
         # 해시 계산은 전체 파일 기준으로 수행 (max_compare_files 적용 전)
         full_file_paths = list(all_target_files)
-        folder_files, all_target_files = _apply_max_compare_files(search_mode, folder_files, all_target_files, max_compare_files)
+        folder_files, all_target_files = _apply_max_compare_files(search_mode, folder_files, all_target_files, max_compare_files, method, hash_size)
         compare_file_paths = list(all_target_files)
         new_compare_files_set, baseline_compare_files, new_compare_files = _prepare_incremental_targets(compare_file_paths, method, hash_size)
         if baseline_compare_files:
@@ -1566,7 +1576,7 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
         _, all_collected_files = _collect_files_for_mode(folders, include_sub, search_mode)
         # 해시 계산은 전체 파일 기준으로 수행 (max_compare_files 적용 전)
         full_file_paths = list(all_collected_files)
-        _, all_files = _apply_max_compare_files(search_mode, None, all_collected_files, max_compare_files)
+        _, all_files = _apply_max_compare_files(search_mode, None, all_collected_files, max_compare_files, method, hash_size)
         compare_file_paths = list(all_files)
         new_compare_files_set, baseline_compare_files, new_compare_files = _prepare_incremental_targets(compare_file_paths, method, hash_size)
         if baseline_compare_files:
