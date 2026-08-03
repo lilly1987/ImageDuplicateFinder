@@ -570,11 +570,19 @@ def precompute_hashes(paths, method, hash_size, batch_size=1000, max_new_hashes=
 
         missing = [p for p in missing if p not in db_hashes]
         already_cached_count = len(unique_paths) - len(missing) - len(db_hashes)
-        if max_new_hashes > 0 and len(missing) > max_new_hashes:
-            logger.info(f"[bold cyan][알림] 새 해시 계산을 최대 {max_new_hashes}개로 제한합니다. 나머지 {len(missing) - max_new_hashes}개는 생략됩니다.[/bold cyan]")
-            missing = missing[:max_new_hashes]
+        _, effective_target_count = _describe_hash_precompute_targets(len(unique_paths), len(missing), max_new_hashes)
+        if max_new_hashes > 0:
+            if len(missing) >= max_new_hashes:
+                logger.info(f"[bold cyan][알림] 설정된 새 해시 계산 수: {max_new_hashes}개를 실행합니다.[/bold cyan]")
+                missing = missing[:max_new_hashes]
+            else:
+                logger.info(f"[bold cyan][알림] 남은 신규 대상이 {len(missing)}개라서 모두 계산합니다.[/bold cyan]")
+                missing = missing[:len(missing)]
 
-        logger.info(f"[bold cyan][알림] 새 해시 계산 대상: {len(missing)}개 (기존 캐시/DB 포함 건수 제외, 이미 계산된 건수: {already_cached_count})[/bold cyan]")
+        logger.info(
+            f"[bold cyan][알림] 새 해시 계산 대상: {len(missing)}개 "
+            f"(설정값={max_new_hashes if max_new_hashes > 0 else '무제한'}, 남은 신규 대상={len(missing)}개, 이미 계산된 건수={already_cached_count}, 실제 실행={effective_target_count})[/bold cyan]"
+        )
 
         if missing:
             process_pool = get_hash_process_pool()
@@ -898,6 +906,13 @@ def _resolve_compare_options(options):
     except Exception:
         max_compare_files = 0
     max_hash_compute_files = options.get("max_hash_compute_files", 0)
+    compare_progress_log_interval = options.get("compare_progress_log_interval", 0)
+    try:
+        compare_progress_log_interval = int(compare_progress_log_interval)
+        if compare_progress_log_interval < 0:
+            compare_progress_log_interval = 0
+    except Exception:
+        compare_progress_log_interval = 0
     try:
         max_hash_compute_files = int(max_hash_compute_files)
         if max_hash_compute_files < 0:
@@ -920,6 +935,7 @@ def _resolve_compare_options(options):
         "duplicate_limit": duplicate_limit,
         "max_compare_files": max_compare_files,
         "max_hash_compute_files": max_hash_compute_files,
+        "compare_progress_log_interval": compare_progress_log_interval,
         "save_duplicate_results": save_duplicate_results,
         "load_saved_results": load_saved_results,
         "auto_open_duplicate_results": auto_open_duplicate_results,
@@ -1063,17 +1079,60 @@ def _run_pre_scan_steps(all_target_files, method, hash_size, aspect_ratio_tol, d
     return total_duplicates, False
 
 
-def _calculate_log_interval(total_pairs):
+def _estimate_compare_total_pairs(search_mode, folder_files, all_files, new_compare_files_set):
+    if search_mode == "cross_folder":
+        total_pairs = 0
+        for i in range(len(folder_files)):
+            keys = list(folder_files.keys())
+            if i >= len(keys):
+                break
+            for j in range(i + 1, len(keys)):
+                f1, f2 = keys[i], keys[j]
+                pending_files = [p for p in folder_files[f1] if p in new_compare_files_set]
+                if pending_files:
+                    total_pairs += len(pending_files) * len(folder_files[f2])
+        return total_pairs
+
+    pending_files = [p for p in all_files if p in new_compare_files_set]
+    return max(0, len(pending_files) * (len(all_files) - 1))
+
+
+def _calculate_log_interval(total_pairs, configured_interval=None):
+    if configured_interval is not None:
+        try:
+            configured_interval = int(configured_interval)
+        except Exception:
+            configured_interval = None
+        if configured_interval is not None and configured_interval > 0:
+            return configured_interval
+
     if total_pairs <= 0:
         return 1
-    if total_pairs >= 5000:
-        return 1000
+    if total_pairs >= 50_000_000:
+        return 100_000
+    if total_pairs >= 5_000_000:
+        return 10_000
+    if total_pairs >= 500_000:
+        return 5_000
+    if total_pairs >= 50_000:
+        return 1_000
+    if total_pairs >= 5_000:
+        return 1_000
     return max(1, total_pairs // 10)
 
 
 def _accumulate_compare_progress(total_compared, completed_result):
     completed_pairs, is_duplicate = completed_result
     return total_compared + completed_pairs, is_duplicate
+
+
+def _describe_hash_precompute_targets(total_candidates, remaining_new_targets, max_new_hashes):
+    already_cached_count = max(0, total_candidates - remaining_new_targets)
+    if max_new_hashes > 0:
+        effective_target_count = min(remaining_new_targets, max_new_hashes)
+    else:
+        effective_target_count = remaining_new_targets
+    return already_cached_count, effective_target_count
 
 
 def _run_cross_folder_compare(folder_files, new_compare_files_set, hashes, candidates, method, hash_size, tolerance, duplicate_limit, use_compare_cache, start_time, log_interval, verbose_single):
@@ -1258,7 +1317,7 @@ def _run_all_folder_compare(all_files, new_compare_files_set, hashes, candidates
     return total_compared, total_duplicates, total_pairs
 
 
-def _run_compare_branch(search_mode, folders, include_sub, options, method, hash_size, tolerance, duplicate_limit, max_compare_files, max_hash_compute_files, use_compare_cache, start_time, aspect_ratio_tol, tolerance_rate):
+def _run_compare_branch(search_mode, folders, include_sub, options, method, hash_size, tolerance, duplicate_limit, max_compare_files, max_hash_compute_files, use_compare_cache, start_time, aspect_ratio_tol, tolerance_rate, compare_progress_log_interval=0):
     total_compared = 0
     total_duplicates = 0
     total_pairs = 0
@@ -1312,6 +1371,9 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
             logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
             return 0, total_duplicates, 0, compare_file_paths
 
+        estimated_total_pairs = _estimate_compare_total_pairs(search_mode, folder_files, all_target_files, new_compare_files_set)
+        log_interval = _calculate_log_interval(estimated_total_pairs, compare_progress_log_interval)
+        logger.info(f"Progress log interval: {log_interval} pairs (estimated_total_pairs={estimated_total_pairs:,})")
         total_compared, total_duplicates, total_pairs = _run_cross_folder_compare(
             folder_files,
             new_compare_files_set,
@@ -1323,8 +1385,8 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
             duplicate_limit,
             use_compare_cache,
             start_time,
-            _calculate_log_interval(total_pairs),
-            total_pairs < 50,
+            log_interval,
+            estimated_total_pairs < 50,
         )
     else:
         logger.info("[bold cyan][all_folders 모드][/bold cyan]")
@@ -1373,7 +1435,8 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
         pending_files = [p for p in all_files if p in new_compare_files_set]
         total_pairs = max(0, len(pending_files) * (n - 1))
         logger.info(f"Starting all_folders compare: total_pairs={total_pairs}, files={n}, pending_files={len(pending_files)}")
-        log_interval = _calculate_log_interval(total_pairs)
+        log_interval = _calculate_log_interval(total_pairs, compare_progress_log_interval)
+        logger.info(f"Progress log interval: {log_interval} pairs (estimated_total_pairs={total_pairs:,})")
         verbose_single = total_pairs < 50
         total_compared, total_duplicates, total_pairs = _run_all_folder_compare(
             all_files,
@@ -1408,10 +1471,11 @@ def try_compare(folder_list):
     duplicate_limit = compare_options["duplicate_limit"]
     max_compare_files = compare_options["max_compare_files"]
     max_hash_compute_files = compare_options["max_hash_compute_files"]
+    compare_progress_log_interval = compare_options["compare_progress_log_interval"]
     save_duplicate_results = compare_options["save_duplicate_results"]
     use_compare_cache = compare_options["use_compare_cache"]
     aspect_ratio_tol = compare_options["aspect_ratio_tol"]
-    logger.info(f"Options: mode={search_mode}, include_sub={include_sub}, method={method}, hash_size={hash_size}, tolerance={tolerance} ({tolerance_rate}), duplicate_limit={duplicate_limit}, max_compare_files={max_compare_files}, max_hash_compute_files={max_hash_compute_files}, save_results={save_duplicate_results}, load_saved_results={compare_options['load_saved_results']}, auto_open={compare_options['auto_open_duplicate_results']}, use_compare_cache={use_compare_cache}")
+    logger.info(f"Options: mode={search_mode}, include_sub={include_sub}, method={method}, hash_size={hash_size}, tolerance={tolerance} ({tolerance_rate}), duplicate_limit={duplicate_limit}, max_compare_files={max_compare_files}, max_hash_compute_files={max_hash_compute_files}, progress_log_interval={compare_progress_log_interval}, save_results={save_duplicate_results}, load_saved_results={compare_options['load_saved_results']}, auto_open={compare_options['auto_open_duplicate_results']}, use_compare_cache={use_compare_cache}")
 
     if compare_options["load_saved_results"]:
         groups = load_duplicate_results_json(method, hash_size, aspect_ratio_tol, tolerance_rate)
@@ -1437,6 +1501,7 @@ def try_compare(folder_list):
             start_time,
             aspect_ratio_tol,
             tolerance_rate,
+            compare_progress_log_interval,
         )
 
         elapsed_time = time.perf_counter() - start_time
