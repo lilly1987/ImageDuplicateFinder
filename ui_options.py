@@ -66,7 +66,7 @@ def show_options(root, lang):
     tk.Entry(win, textvariable=batch_size_var).pack(anchor="w")
 
     # --- 최대 해시 계산 파일 수 ---
-    tk.Label(win, text=lang["ui"].get("max_hash_compute_files", "최대 해시 계산할 파일 수 (0이면 전체, 이미 계산된 해시 제외)" )).pack(anchor="w")
+    tk.Label(win, text=lang["ui"].get("max_hash_compute_files", "최대 새로 해시 계산할 파일 수 (0이면 전체, 이미 계산된/캐시된 해시 제외)" )).pack(anchor="w")
     max_hash_compute_var = tk.IntVar(value=config.get("max_hash_compute_files", 0))
     tk.Entry(win, textvariable=max_hash_compute_var).pack(anchor="w")
 

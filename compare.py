@@ -32,6 +32,37 @@ DB_WRITE_BATCH_SIZE = 100
 duplicate_pairs = set()
 duplicates_lock = threading.Lock()
 
+# 증분 비교 재시작 지원: 이미 처리한 파일은 기준으로 유지하고, 새로 추가된 파일만 비교한다.
+compare_progress_state = {}
+compare_progress_lock = threading.Lock()
+
+
+def _compare_progress_key(method, hash_size):
+    return (method, int(hash_size))
+
+
+def select_incremental_compare_targets(current_paths, previous_paths):
+    current = [p for p in dict.fromkeys(current_paths) if p]
+    if not previous_paths:
+        return current, []
+    previous_set = {p for p in previous_paths if p}
+    baseline = [p for p in current if p in previous_set]
+    new_files = [p for p in current if p not in previous_set]
+    return new_files, baseline
+
+
+def get_processed_compare_files(method, hash_size):
+    key = _compare_progress_key(method, hash_size)
+    with compare_progress_lock:
+        return list(compare_progress_state.get(key, set()))
+
+
+def update_processed_compare_files(method, hash_size, paths):
+    key = _compare_progress_key(method, hash_size)
+    with compare_progress_lock:
+        bucket = compare_progress_state.setdefault(key, set())
+        bucket.update(path for path in paths if path)
+
 
 def record_duplicate_pair(f1, f2):
     with duplicates_lock:
@@ -526,13 +557,14 @@ def precompute_hashes(paths, method, hash_size, batch_size=1000, max_new_hashes=
                 hash_cache[key] = h
                 hashes[path] = h
         logger.info(f"[bold cyan][알림] DB에서 {len(db_hashes)}개의 해시를 가져왔습니다.[/bold cyan]")
-        
+
         missing = [p for p in missing if p not in db_hashes]
+        already_cached_count = len(unique_paths) - len(missing) - len(db_hashes)
         if max_new_hashes > 0 and len(missing) > max_new_hashes:
             logger.info(f"[bold cyan][알림] 새 해시 계산을 최대 {max_new_hashes}개로 제한합니다. 나머지 {len(missing) - max_new_hashes}개는 생략됩니다.[/bold cyan]")
             missing = missing[:max_new_hashes]
 
-        logger.info(f"[bold cyan][알림] {len(missing)}개의 해시를 새로 계산해야 합니다.[/bold cyan]")
+        logger.info(f"[bold cyan][알림] 새 해시 계산 대상: {len(missing)}개 (기존 캐시/DB 포함 건수 제외, 이미 계산된 건수: {already_cached_count})[/bold cyan]")
 
         if missing:
             process_pool = get_hash_process_pool()
@@ -714,7 +746,11 @@ def compare_files(file1, file2, method, hash_size, tolerance, verbose=False, use
     # 새 비교 → 해시값 얻기 (메모리/DB 캐시 사용)
     if hashes is not None:
         h1 = hashes.get(file1)
+        if h1 is None:
+            h1 = get_cached_file_hash((file1, method, hash_size))
         h2 = hashes.get(file2)
+        if h2 is None:
+            h2 = get_cached_file_hash((file2, method, hash_size))
     else:
         h1 = get_cached_file_hash((file1, method, hash_size))
         h2 = get_cached_file_hash((file2, method, hash_size))
@@ -753,6 +789,8 @@ def compare_file_with_list(file1, file2_list, method, hash_size, tolerance, verb
 
     if hashes is not None:
         h1 = hashes.get(file1)
+        if h1 is None:
+            h1 = get_cached_file_hash((file1, method, hash_size))
     else:
         h1 = get_cached_file_hash((file1, method, hash_size))
     if h1 is None:
@@ -764,7 +802,12 @@ def compare_file_with_list(file1, file2_list, method, hash_size, tolerance, verb
         if is_stop_requested():
             break
 
-        h2 = hashes.get(file2) if hashes is not None else get_cached_file_hash((file2, method, hash_size))
+        if hashes is not None:
+            h2 = hashes.get(file2)
+            if h2 is None:
+                h2 = get_cached_file_hash((file2, method, hash_size))
+        else:
+            h2 = get_cached_file_hash((file2, method, hash_size))
         if h2 is None:
             continue
 
@@ -921,6 +964,16 @@ def try_compare(folder_list):
                 logger.info(f"[bold cyan][알림] 최대 비교 파일 수 {max_compare_files}개 적용됨: 비교 대상 {len(all_target_files)}개[/bold cyan]")
 
             compare_file_paths = list(all_target_files)
+            processed_compare_files = get_processed_compare_files(method, hash_size)
+            new_compare_files, baseline_compare_files = select_incremental_compare_targets(compare_file_paths, processed_compare_files)
+            new_compare_files_set = set(new_compare_files)
+            if baseline_compare_files:
+                logger.info(f"[bold cyan][알림] 증분 비교 모드: 기준 파일 {len(baseline_compare_files)}개, 신규 파일 {len(new_compare_files)}개[/bold cyan]")
+            elif new_compare_files:
+                logger.info(f"[bold cyan][알림] 신규 파일 {len(new_compare_files)}개를 기준으로 비교를 시작합니다.[/bold cyan]")
+            else:
+                logger.info("[bold cyan][알림] 새로 추가된 비교 대상이 없어 비교를 건너뜁니다.[/bold cyan]")
+                return _compare_result(total_duplicates, compare_file_paths, method, hash_size, max_hash_compute_files, stopped_early=False)
 
             if is_stop_requested():
                 logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
@@ -1023,7 +1076,9 @@ def try_compare(folder_list):
             for i in range(len(keys)):
                 for j in range(i+1, len(keys)):
                     f1, f2 = keys[i], keys[j]
-                    total_pairs += len(folder_files[f1]) * len(folder_files[f2])
+                    pending_files = [p for p in folder_files[f1] if p in new_compare_files_set]
+                    if pending_files:
+                        total_pairs += len(pending_files) * len(folder_files[f2])
 
             logger.info(f"Starting cross_folder compare: total_pairs={total_pairs}, folders={len(keys)}")
             log_interval = 1000 if total_pairs >= 5000 else max(1, total_pairs // 10)
@@ -1084,7 +1139,9 @@ def try_compare(folder_list):
                         if is_stop_requested():
                             break
                         f1, f2 = keys[i], keys[j]
-                        for file1 in folder_files[f1]:
+                        pending_files = [p for p in folder_files[f1] if p in new_compare_files_set]
+                        for file1 in pending_files:
+                            update_processed_compare_files(method, hash_size, [file1])
                             if is_stop_requested():
                                 break
                             batch = []
@@ -1136,6 +1193,16 @@ def try_compare(folder_list):
                 logger.info(f"[bold cyan][알림] 최대 비교 파일 수 {max_compare_files}개 적용됨: 비교 대상 {len(all_files)}개[/bold cyan]")
 
             compare_file_paths = list(all_files)
+            processed_compare_files = get_processed_compare_files(method, hash_size)
+            new_compare_files, baseline_compare_files = select_incremental_compare_targets(compare_file_paths, processed_compare_files)
+            new_compare_files_set = set(new_compare_files)
+            if baseline_compare_files:
+                logger.info(f"[bold cyan][알림] 증분 비교 모드: 기준 파일 {len(baseline_compare_files)}개, 신규 파일 {len(new_compare_files)}개[/bold cyan]")
+            elif new_compare_files:
+                logger.info(f"[bold cyan][알림] 신규 파일 {len(new_compare_files)}개를 기준으로 비교를 시작합니다.[/bold cyan]")
+            else:
+                logger.info("[bold cyan][알림] 새로 추가된 비교 대상이 없어 비교를 건너뜁니다.[/bold cyan]")
+                return _compare_result(total_duplicates, compare_file_paths, method, hash_size, max_hash_compute_files, stopped_early=False)
 
             if is_stop_requested():
                 logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
@@ -1161,9 +1228,10 @@ def try_compare(folder_list):
                 return _compare_result(total_duplicates, compare_file_paths, method, hash_size, max_hash_compute_files, stopped_early=True)
 
             n = len(all_files)
-            total_pairs = n * (n - 1) // 2
+            pending_files = [p for p in all_files if p in new_compare_files_set]
+            total_pairs = max(0, len(pending_files) * (n - 1))
 
-            logger.info(f"Starting all_folders compare: total_pairs={total_pairs}, files={n}")
+            logger.info(f"Starting all_folders compare: total_pairs={total_pairs}, files={n}, pending_files={len(pending_files)}")
             log_interval = 1000 if total_pairs >= 5000 else max(1, total_pairs // 10)
             verbose_single = total_pairs < 50
 
@@ -1214,23 +1282,26 @@ def try_compare(folder_list):
                 return stop_now
 
             try:
-                for i in range(n):
+                for file1 in pending_files:
                     if is_stop_requested():
                         break
+                    update_processed_compare_files(method, hash_size, [file1])
                     batch = []
-                    for j in range(i+1, n):
+                    for file2 in all_files:
+                        if file2 == file1:
+                            continue
                         if is_stop_requested():
                             break
-                        batch.append(all_files[j])
+                        batch.append(file2)
                         if len(batch) >= max_workers * 4:
-                            filtered = filter_batch_candidates(all_files[i], batch, candidates)
+                            filtered = filter_batch_candidates(file1, batch, candidates)
                             if filtered:
-                                futures.add(executor.submit(compare_file_with_list, all_files[i], filtered, method, hash_size, tolerance, verbose=verbose_single, use_compare_cache=use_compare_cache, duplicate_limit=duplicate_limit, hashes=hashes))
+                                futures.add(executor.submit(compare_file_with_list, file1, filtered, method, hash_size, tolerance, verbose=verbose_single, use_compare_cache=use_compare_cache, duplicate_limit=duplicate_limit, hashes=hashes))
                             batch = []
                     if batch:
-                            filtered = filter_batch_candidates(all_files[i], batch, candidates)
-                            if filtered:
-                                futures.add(executor.submit(compare_file_with_list, all_files[i], filtered, method, hash_size, tolerance, verbose=verbose_single, use_compare_cache=use_compare_cache, duplicate_limit=duplicate_limit, hashes=hashes))
+                        filtered = filter_batch_candidates(file1, batch, candidates)
+                        if filtered:
+                            futures.add(executor.submit(compare_file_with_list, file1, filtered, method, hash_size, tolerance, verbose=verbose_single, use_compare_cache=use_compare_cache, duplicate_limit=duplicate_limit, hashes=hashes))
                     if len(futures) >= max_workers * 2:
                         if drain_futures():
                             break
