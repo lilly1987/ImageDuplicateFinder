@@ -1071,6 +1071,11 @@ def _calculate_log_interval(total_pairs):
     return max(1, total_pairs // 10)
 
 
+def _accumulate_compare_progress(total_compared, completed_result):
+    completed_pairs, is_duplicate = completed_result
+    return total_compared + completed_pairs, is_duplicate
+
+
 def _run_cross_folder_compare(folder_files, new_compare_files_set, hashes, candidates, method, hash_size, tolerance, duplicate_limit, use_compare_cache, start_time, log_interval, verbose_single):
     total_compared = 0
     total_duplicates = 0
@@ -1100,10 +1105,10 @@ def _run_cross_folder_compare(folder_files, new_compare_files_set, hashes, candi
             if fut.cancelled():
                 continue
             try:
-                _, is_duplicate = fut.result()
+                completed_pairs, is_duplicate = fut.result()
             except Exception:
                 continue
-            total_compared += 1
+            total_compared, _ = _accumulate_compare_progress(total_compared, (completed_pairs, is_duplicate))
             if is_duplicate:
                 total_duplicates += 1
                 if duplicate_limit > 0 and total_duplicates >= duplicate_limit:
@@ -1192,10 +1197,10 @@ def _run_all_folder_compare(all_files, new_compare_files_set, hashes, candidates
             if fut.cancelled():
                 continue
             try:
-                _, is_duplicate = fut.result()
+                completed_pairs, is_duplicate = fut.result()
             except Exception:
                 continue
-            total_compared += 1
+            total_compared, _ = _accumulate_compare_progress(total_compared, (completed_pairs, is_duplicate))
             if is_duplicate:
                 total_duplicates += 1
                 if duplicate_limit > 0 and total_duplicates >= duplicate_limit:

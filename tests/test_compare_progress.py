@@ -4,7 +4,12 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from compare import select_incremental_compare_targets, select_hash_precompute_targets, _calculate_log_interval
+from compare import (
+    select_incremental_compare_targets,
+    select_hash_precompute_targets,
+    _calculate_log_interval,
+    _accumulate_compare_progress,
+)
 
 
 class IncrementalCompareTargetTests(unittest.TestCase):
@@ -39,6 +44,10 @@ class IncrementalCompareTargetTests(unittest.TestCase):
         self.assertEqual(_calculate_log_interval(100), 10)
         self.assertEqual(_calculate_log_interval(5000), 1000)
         self.assertEqual(_calculate_log_interval(10000), 1000)
+
+    def test_accumulates_progress_by_compared_pairs(self):
+        self.assertEqual(_accumulate_compare_progress(10, (3, True)), (13, True))
+        self.assertEqual(_accumulate_compare_progress(10, (0, False)), (10, False))
 
 
 if __name__ == "__main__":
