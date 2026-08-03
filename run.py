@@ -62,10 +62,10 @@ def main():
         config = load_config()
         method = config.get("compare_method", "ahash")
         hash_size = int(config.get("hash_size", 8))
-        h_cnt, c_cnt = get_cache_counts(method, hash_size)
-        cache_count_label.config(text=f" |  캐시({method}, {hash_size}): 해시 {h_cnt:,}개 / 비교 {c_cnt:,}개")
+        h_cnt, c_cnt, p_cnt, d_cnt = get_cache_counts(method, hash_size)
+        cache_count_label.config(text=f" |  캐시({method}, {hash_size}): 해시 {h_cnt:,}개 / 비교 {c_cnt:,}개 / 진행 {p_cnt:,}개 / 중복 {d_cnt:,}개")
         if verbose:
-            logger.info(f"[bold cyan][알림] 캐시 건수 새로고침 완료 (알고리즘: {method}, 해시 크기: {hash_size}, 해시: {h_cnt:,}개, 비교: {c_cnt:,}개)[/bold cyan]")
+            logger.info(f"[bold cyan][알림] 캐시 건수 새로고침 완료 (알고리즘: {method}, 해시 크기: {hash_size}, 해시: {h_cnt:,}개, 비교: {c_cnt:,}개, 진행: {p_cnt:,}개, 중복: {d_cnt:,}개)[/bold cyan]")
 
     tk.Button(info_frame, text="캐시 초기화",
               command=lambda: clear_cache(update_cache_ui)).pack(side="left")

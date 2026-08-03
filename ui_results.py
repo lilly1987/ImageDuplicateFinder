@@ -4,7 +4,12 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
 from PIL import Image, ImageTk
-from compare import load_duplicate_results_json, duplicate_results_json_path, resolve_search_options
+from compare import (
+    load_duplicate_results_json,
+    duplicate_results_json_path,
+    resolve_search_options,
+    remove_missing_files_from_cache,
+)
 
 
 def show_duplicate_results_window(root, lang):
@@ -271,13 +276,21 @@ def show_duplicate_results_window(root, lang):
             return
         changed = False
         new_groups = []
+        missing_paths = []
         for group in saved_groups:
-            remaining = [p for p in group if os.path.exists(p)]
+            remaining = []
+            for p in group:
+                if os.path.exists(p):
+                    remaining.append(p)
+                else:
+                    missing_paths.append(p)
+                    changed = True
             if len(remaining) > 1:
                 new_groups.append(remaining)
-            else:
-                changed = True
         if changed:
+            # DB 캐시에서도 존재하지 않는 파일 제거
+            method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
+            remove_missing_files_from_cache(method, hash_size, missing_paths)
             save_duplicate_groups_json(new_groups)
             messagebox.showinfo(lang["ui"].get("info", "정보"), lang["ui"].get("removed_missing", "없는 파일 목록이 제거되었습니다."))
             load_results()
