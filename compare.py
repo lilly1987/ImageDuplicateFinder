@@ -35,6 +35,7 @@ except Exception:
 # 상수 및 전역 상태
 # ============================================================
 DB_FILE = "cache.db"
+DB_TIMEOUT = 30  # sqlite3 lock 대기 시간 (초)
 
 # DB 접근 락
 db_lock = threading.Lock()
@@ -76,7 +77,7 @@ hash_process_pool = None
 def init_db():
     """DB 테이블 생성 (없으면 생성) 및 기존 스키마 마이그레이션"""
     with db_lock:
-        conn = sqlite3.connect(DB_FILE)
+        conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         try:
             cur = conn.cursor()
             # 해시 캐시: 파일 경로 + 알고리즘 + 해시 크기별 해시값
@@ -170,7 +171,7 @@ def _flush_db_writes():
         return
 
     with db_lock:
-        conn = sqlite3.connect(DB_FILE)
+        conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         try:
             cur = conn.cursor()
             if hash_rows:
@@ -326,7 +327,7 @@ def get_file_hash(path, method="ahash", hash_size=8):
 
     # DB에서 해시 확인
     with db_lock:
-        conn = sqlite3.connect(DB_FILE)
+        conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         try:
             cur = conn.cursor()
             cur.execute(
@@ -408,7 +409,7 @@ def _query_cached_hashes(paths, method, hash_size):
         chunk = paths[i:i + chunk_size]
         placeholders = ",".join("?" for _ in chunk)
         with db_lock:
-            conn = sqlite3.connect(DB_FILE)
+            conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
             try:
                 cur = conn.cursor()
                 cur.execute(
@@ -585,7 +586,7 @@ def already_compared(file1, file2, method, hash_size):
 
     # DB 확인
     with db_lock:
-        conn = sqlite3.connect(DB_FILE)
+        conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         try:
             cur = conn.cursor()
             cur.execute(
@@ -619,7 +620,7 @@ def add_compare_record(file1, file2, method, hash_size, is_duplicate):
 def get_processed_compare_files(method, hash_size):
     """DB에서 처리 완료된 파일 목록 조회"""
     with db_lock:
-        conn = sqlite3.connect(DB_FILE)
+        conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         try:
             cur = conn.cursor()
             cur.execute(
@@ -699,7 +700,7 @@ def save_duplicate_results_to_db(method, hash_size):
 
     # 기존 DB 결과 삭제 후 재저장
     with db_lock:
-        conn = sqlite3.connect(DB_FILE)
+        conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         try:
             cur = conn.cursor()
             cur.execute(
@@ -720,7 +721,7 @@ def save_duplicate_results_to_db(method, hash_size):
 def load_duplicate_results_from_db(method, hash_size):
     """DB에서 중복 결과 로드"""
     with db_lock:
-        conn = sqlite3.connect(DB_FILE)
+        conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         try:
             cur = conn.cursor()
             cur.execute(
@@ -764,7 +765,7 @@ def remove_missing_files_from_cache(method, hash_size, missing_paths):
         return
 
     with db_lock:
-        conn = sqlite3.connect(DB_FILE)
+        conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         try:
             cur = conn.cursor()
             for path in missing_paths:
@@ -962,7 +963,7 @@ def preload_compare_cache(method, hash_size, max_memory_mb=0):
 
     logger.info(f"[bold cyan][알림] 비교 캐시를 메모리에 선로드합니다. (max_memory_mb={max_memory_mb})[/bold cyan]")
     with db_lock:
-        conn = sqlite3.connect(DB_FILE)
+        conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         try:
             cur = conn.cursor()
             cur.execute(

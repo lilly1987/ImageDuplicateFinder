@@ -9,7 +9,7 @@ def get_cache_counts(method=None, hash_size=None):
     if not os.path.exists(DB_FILE):
         return 0, 0, 0, 0
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn = sqlite3.connect(DB_FILE, timeout=30)
         cur = conn.cursor()
         if method is None or hash_size is None:
             cur.execute("SELECT COUNT(*) FROM hash_cache")
@@ -53,7 +53,7 @@ def clear_cache(update_fn=None):
 
     if os.path.exists(DB_FILE):
         try:
-            conn = sqlite3.connect(DB_FILE)
+            conn = sqlite3.connect(DB_FILE, timeout=30)
             cur = conn.cursor()
             cur.execute("DELETE FROM hash_cache")
             cur.execute("DELETE FROM compare_cache")
