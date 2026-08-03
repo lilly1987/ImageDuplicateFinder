@@ -288,6 +288,37 @@ def show_duplicate_results_window(root, lang):
             save_duplicate_groups_json(new_groups)
             load_results()
 
+    def delete_selected_files():
+        checked_groups, checked_files = get_checked_items()
+        if not checked_groups and not checked_files:
+            return
+        confirm_msg = lang["ui"].get(
+            "delete_files_confirm",
+            "선택한 파일을 실제로 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
+        )
+        if not messagebox.askyesno(lang["ui"].get("confirm", "확인"), confirm_msg, default=messagebox.NO):
+            return
+        paths_to_delete = []
+        for group_index in checked_groups:
+            if 0 <= group_index < len(saved_groups):
+                paths_to_delete.extend(saved_groups[group_index])
+        for file_path, _group_id in checked_files:
+            if file_path not in paths_to_delete:
+                paths_to_delete.append(file_path)
+        failed = []
+        for file_path in paths_to_delete:
+            try:
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+            except OSError:
+                failed.append(file_path)
+        remove_selected_items()
+        if failed:
+            messagebox.showwarning(
+                lang["ui"].get("info", "정보"),
+                lang["ui"].get("delete_files_error", "일부 파일을 삭제하지 못했습니다.") + "\n" + "\n".join(failed),
+            )
+
     def invert_selection():
         for group_id in tree.get_children():
             current_group = is_checked(group_id)
@@ -296,13 +327,26 @@ def show_duplicate_results_window(root, lang):
                 set_checked(child_id, not is_checked(child_id))
 
     tk.Button(button_bar, text=lang["ui"].get("remove_missing", "없는파일 목록에서 제거"), command=remove_missing_files).pack(side="left")
-    tk.Button(button_bar, text=lang["ui"].get("delete_selected_items", "선택 항목 삭제"), command=remove_selected_items).pack(side="left")
+    tk.Button(button_bar, text=lang["ui"].get("remove_selected", "체크한 그룹/항목 목록에서 제거"), command=remove_selected_items).pack(side="left")
+    tk.Button(button_bar, text=lang["ui"].get("delete_selected_items", "선택 항목 실제 파일 삭제"), command=delete_selected_files).pack(side="left")
     tk.Button(button_bar, text=lang["ui"].get("invert_selection", "선택 항목 반전"), command=invert_selection).pack(side="left")
+
+    def on_delete_key(event):
+        remove_selected_items()
+        return "break"
+
+    def on_shift_delete_key(event):
+        delete_selected_files()
+        return "break"
 
     tree.bind("<<TreeviewSelect>>", show_selected_preview)
     tree.bind("<Button-1>", on_tree_click)
     tree.bind("<Double-1>", on_tree_double_click)
     tree.bind("<Button-3>", on_tree_right_click)
     tree.bind("<space>", on_tree_space)
+    tree.bind("<Delete>", on_delete_key)
+    tree.bind("<Shift-Delete>", on_shift_delete_key)
+    win.bind("<Delete>", on_delete_key)
+    win.bind("<Shift-Delete>", on_shift_delete_key)
 
     load_results()
