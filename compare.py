@@ -584,17 +584,18 @@ def already_compared(file1, file2, method, hash_size):
         return None
 
     # DB 확인
-    conn = sqlite3.connect(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT is_duplicate FROM compare_cache WHERE file1=? AND file2=? AND method=? AND hash_size=?",
-            (f1, f2, method, hash_size)
-        )
-        row = cur.fetchone()
-        result = bool(row[0]) if row else None
-    finally:
-        conn.close()
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT is_duplicate FROM compare_cache WHERE file1=? AND file2=? AND method=? AND hash_size=?",
+                (f1, f2, method, hash_size)
+            )
+            row = cur.fetchone()
+            result = bool(row[0]) if row else None
+        finally:
+            conn.close()
 
     # 메모리 캐시에 저장
     with compare_memory_lock:
@@ -617,16 +618,17 @@ def add_compare_record(file1, file2, method, hash_size, is_duplicate):
 # ============================================================
 def get_processed_compare_files(method, hash_size):
     """DB에서 처리 완료된 파일 목록 조회"""
-    conn = sqlite3.connect(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT path FROM compare_progress WHERE method=? AND hash_size=?",
-            (method, hash_size)
-        )
-        return [row[0] for row in cur.fetchall()]
-    finally:
-        conn.close()
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT path FROM compare_progress WHERE method=? AND hash_size=?",
+                (method, hash_size)
+            )
+            return [row[0] for row in cur.fetchall()]
+        finally:
+            conn.close()
 
 
 def update_processed_compare_files(method, hash_size, paths):
@@ -717,16 +719,17 @@ def save_duplicate_results_to_db(method, hash_size):
 
 def load_duplicate_results_from_db(method, hash_size):
     """DB에서 중복 결과 로드"""
-    conn = sqlite3.connect(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT group_id, path FROM duplicate_results WHERE method=? AND hash_size=? ORDER BY group_id, path",
-            (method, hash_size)
-        )
-        rows = cur.fetchall()
-    finally:
-        conn.close()
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT group_id, path FROM duplicate_results WHERE method=? AND hash_size=? ORDER BY group_id, path",
+                (method, hash_size)
+            )
+            rows = cur.fetchall()
+        finally:
+            conn.close()
 
     if not rows:
         return None
@@ -958,16 +961,17 @@ def preload_compare_cache(method, hash_size, max_memory_mb=0):
         _compare_cache_loaded = True
 
     logger.info(f"[bold cyan][알림] 비교 캐시를 메모리에 선로드합니다. (max_memory_mb={max_memory_mb})[/bold cyan]")
-    conn = sqlite3.connect(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT file1, file2, is_duplicate FROM compare_cache WHERE method=? AND hash_size=?",
-            (method, hash_size)
-        )
-        rows = cur.fetchall()
-    finally:
-        conn.close()
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT file1, file2, is_duplicate FROM compare_cache WHERE method=? AND hash_size=?",
+                (method, hash_size)
+            )
+            rows = cur.fetchall()
+        finally:
+            conn.close()
 
     loaded = 0
     with compare_memory_lock:
@@ -1776,10 +1780,13 @@ def load_duplicate_results_json(method=None, hash_size=None, aspect_ratio_tol=No
         method, hash_size, aspect_ratio_tol, tolerance_rate
     )
 
-    # 1. DB에서 로드
-    db_groups = load_duplicate_results_from_db(method, hash_size)
-    if db_groups:
-        return db_groups
+    # 1. DB에서 로드 (실패 시 JSON 파일로 폴백)
+    try:
+        db_groups = load_duplicate_results_from_db(method, hash_size)
+        if db_groups:
+            return db_groups
+    except Exception:
+        pass
 
     # 2. JSON 파일에서 로드
     json_path = duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance_rate)
