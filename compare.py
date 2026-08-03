@@ -234,13 +234,19 @@ def schedule_duplicate_record(method, hash_size, group_id, path):
 
 
 def stop_db_writer():
-    """DB 쓰기 스레드 종료"""
+    """DB 쓰기 스레드 종료 및 남은 큐 데이터 저장"""
     db_write_stop.set()
     db_write_event.set()
     if db_write_thread is not None:
         db_write_thread.join(timeout=5)
+    # 강제 종료 시에도 남은 큐 데이터를 DB에 저장
+    try:
+        _flush_db_writes()
+    except Exception:
+        pass
 
 
+# 프로그램 종료/강제 종료 시 남은 캐시 데이터를 DB에 저장
 atexit.register(stop_db_writer)
 
 
@@ -1412,6 +1418,8 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
         logger.info("[bold cyan]cross_folder 모드[/bold cyan]")
         folder_files, all_target_files = _collect_files_for_mode(folders, include_sub, search_mode)
         logger.info(f"total={len(all_target_files)}")
+        # 해시 계산은 전체 파일 기준으로 수행 (max_compare_files 적용 전)
+        full_file_paths = list(all_target_files)
         folder_files, all_target_files = _apply_max_compare_files(search_mode, folder_files, all_target_files, max_compare_files)
         compare_file_paths = list(all_target_files)
         new_compare_files_set, baseline_compare_files, new_compare_files = _prepare_incremental_targets(compare_file_paths, method, hash_size)
@@ -1427,14 +1435,13 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
             logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
             return 0, total_duplicates, 0, compare_file_paths
 
-        logger.info(f"Precomputing hashes for {len(all_target_files)} files...")
+        logger.info(f"Precomputing hashes for {len(full_file_paths)} files...")
         hashes = precompute_hashes(
-            all_target_files,
+            full_file_paths,
             method,
             hash_size,
             batch_size=options.get("hash_precompute_batch_size", 1000),
             max_new_hashes=max_hash_compute_files,
-            previous_paths=get_processed_compare_files(method, hash_size),
         )
         valid = sum(1 for v in hashes.values() if v)
         none_count = sum(1 for v in hashes.values() if v is None)
@@ -1471,8 +1478,10 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
         )
     else:
         logger.info("[bold cyan][all_folders 모드][/bold cyan]")
-        _, all_files = _collect_files_for_mode(folders, include_sub, search_mode)
-        _, all_files = _apply_max_compare_files(search_mode, None, all_files, max_compare_files)
+        _, all_collected_files = _collect_files_for_mode(folders, include_sub, search_mode)
+        # 해시 계산은 전체 파일 기준으로 수행 (max_compare_files 적용 전)
+        full_file_paths = list(all_collected_files)
+        _, all_files = _apply_max_compare_files(search_mode, None, all_collected_files, max_compare_files)
         compare_file_paths = list(all_files)
         new_compare_files_set, baseline_compare_files, new_compare_files = _prepare_incremental_targets(compare_file_paths, method, hash_size)
         if baseline_compare_files:
@@ -1487,14 +1496,13 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
             logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
             return 0, total_duplicates, 0, compare_file_paths
 
-        logger.info(f"Precomputing hashes for {len(all_files)} files...")
+        logger.info(f"Precomputing hashes for {len(full_file_paths)} files...")
         hashes = precompute_hashes(
-            all_files,
+            full_file_paths,
             method,
             hash_size,
             batch_size=options.get("hash_precompute_batch_size", 1000),
             max_new_hashes=max_hash_compute_files,
-            previous_paths=get_processed_compare_files(method, hash_size),
         )
         valid = sum(1 for v in hashes.values() if v)
         none_count = sum(1 for v in hashes.values() if v is None)
