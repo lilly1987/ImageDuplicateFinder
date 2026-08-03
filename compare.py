@@ -758,6 +758,24 @@ def compare_file_with_list(file1, file2_list, method, hash_size, tolerance, verb
 # ------------------------------
 # 메인 비교 함수
 # ------------------------------
+def _has_remaining_compare_work(stopped_early, compare_file_paths, method, hash_size, max_hash_compute_files):
+    if stopped_early:
+        return True
+    if max_hash_compute_files <= 0 or not compare_file_paths:
+        return False
+    db_hashes = _query_cached_hashes(compare_file_paths, method, hash_size)
+    return any(os.path.isfile(p) and p not in db_hashes for p in compare_file_paths)
+
+
+def _compare_result(total_duplicates, compare_file_paths, method, hash_size, max_hash_compute_files, stopped_early=False):
+    return {
+        "total_duplicates": total_duplicates,
+        "has_remaining": _has_remaining_compare_work(
+            stopped_early, compare_file_paths, method, hash_size, max_hash_compute_files
+        ),
+    }
+
+
 def try_compare(folder_list):
     reset_stop()
     start_time = time.perf_counter()
@@ -806,6 +824,8 @@ def try_compare(folder_list):
 
     total_compared = 0
     total_duplicates = 0
+    total_pairs = 0
+    compare_file_paths = []
     init_db()
 
     try:
@@ -852,9 +872,11 @@ def try_compare(folder_list):
                 all_target_files = selected
                 logger.info(f"[bold cyan][알림] 최대 비교 파일 수 {max_compare_files}개 적용됨: 비교 대상 {len(all_target_files)}개[/bold cyan]")
 
+            compare_file_paths = list(all_target_files)
+
             if is_stop_requested():
                 logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
-                return
+                return _compare_result(total_duplicates, compare_file_paths, method, hash_size, max_hash_compute_files, stopped_early=True)
 
             logger.info(f"Precomputing hashes for {len(all_target_files)} files...")
             batch_size = int(options.get("hash_precompute_batch_size", 1000))
@@ -947,10 +969,9 @@ def try_compare(folder_list):
 
             if is_stop_requested():
                 logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
-                return
+                return _compare_result(total_duplicates, compare_file_paths, method, hash_size, max_hash_compute_files, stopped_early=True)
 
             keys = list(folder_files.keys())
-            total_pairs = 0
             for i in range(len(keys)):
                 for j in range(i+1, len(keys)):
                     f1, f2 = keys[i], keys[j]
@@ -1066,9 +1087,11 @@ def try_compare(folder_list):
                 all_files = all_files[:max_compare_files]
                 logger.info(f"[bold cyan][알림] 최대 비교 파일 수 {max_compare_files}개 적용됨: 비교 대상 {len(all_files)}개[/bold cyan]")
 
+            compare_file_paths = list(all_files)
+
             if is_stop_requested():
                 logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
-                return
+                return _compare_result(total_duplicates, compare_file_paths, method, hash_size, max_hash_compute_files, stopped_early=True)
 
             logger.info(f"Precomputing hashes for {len(all_files)} files...")
             batch_size = int(options.get("hash_precompute_batch_size", 1000))
@@ -1087,7 +1110,7 @@ def try_compare(folder_list):
 
             if is_stop_requested():
                 logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
-                return
+                return _compare_result(total_duplicates, compare_file_paths, method, hash_size, max_hash_compute_files, stopped_early=True)
 
             n = len(all_files)
             total_pairs = n * (n - 1) // 2
@@ -1193,7 +1216,14 @@ def try_compare(folder_list):
             logger.info(f"[bold green][비교 완료][/bold green] 소요 시간: {elapsed_time:.2f}초 (총 {total_compared:,}회 비교, JSON 저장: {DUPLICATE_RESULTS_JSON})")
         else:
             logger.info(f"[bold green][비교 완료][/bold green] 소요 시간: {elapsed_time:.2f}초 (총 {total_compared:,}회 비교)")
-        return total_duplicates
+        return _compare_result(
+            total_duplicates,
+            compare_file_paths,
+            method,
+            hash_size,
+            max_hash_compute_files,
+            stopped_early=is_stop_requested(),
+        )
 
     except Exception as e:
         elapsed_time = time.perf_counter() - start_time

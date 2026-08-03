@@ -103,17 +103,32 @@ def main():
                   command=lambda: show_options(root, lang)).pack(side="left")
 
     is_comparing = False
+    user_stop_flag = {"requested": False}
 
     compare_btn = tk.Button(button_frame, text=lang["ui"]["compare_button"])
     compare_btn.pack(side="left")
+
+    auto_retry_var = tk.BooleanVar(value=config.get("auto_retry_compare", False))
+
+    def save_auto_retry_option():
+        config["auto_retry_compare"] = auto_retry_var.get()
+        save_config(config)
+
+    tk.Checkbutton(
+        button_frame,
+        text=lang["ui"].get("auto_retry_compare", "완료 시 자동 재시도"),
+        variable=auto_retry_var,
+        command=save_auto_retry_option,
+    ).pack(side="left")
 
     stop_btn = tk.Button(button_frame, text=lang["ui"].get("stop_button", "비교 중단"), state="disabled")
     stop_btn.pack(side="left")
 
     tk.Button(button_frame, text=lang["ui"].get("duplicate_results_window", "중복 결과"),
               command=lambda: show_duplicate_results_window(root, lang)).pack(side="left")
-              
+
     def on_stop_click():
+        user_stop_flag["requested"] = True
         request_stop()
         logger.warning("[bold yellow][알림] 비교 중단 요청이 접수되었습니다. 현재 진행 중인 루프 종료 후 멈춥니다...[/bold yellow]")
         stop_btn.config(state="disabled")
@@ -127,14 +142,18 @@ def main():
             return
 
         is_comparing = True
+        user_stop_flag["requested"] = False
         reset_stop()
         compare_btn.config(state="disabled")
         stop_btn.config(state="normal")
 
         def worker():
             nonlocal is_comparing
+            has_remaining = False
             try:
-                total_duplicates = try_compare(folder_list)
+                result = try_compare(folder_list)
+                total_duplicates = result.get("total_duplicates", 0) if isinstance(result, dict) else (result or 0)
+                has_remaining = bool(result.get("has_remaining", False)) if isinstance(result, dict) else False
                 options = load_config()
                 if total_duplicates and options.get("auto_open_duplicate_results", False):
                     root.after(0, lambda: show_duplicate_results_window(root, lang))
@@ -145,6 +164,9 @@ def main():
                 root.after(0, lambda: compare_btn.config(state="normal"))
                 root.after(0, lambda: stop_btn.config(state="disabled"))
                 root.after(0, update_cache_ui)
+                if auto_retry_var.get() and has_remaining and not user_stop_flag["requested"]:
+                    logger.info("[bold cyan][알림] 비교할 건수가 남아 자동 재시도합니다.[/bold cyan]")
+                    root.after(0, start_compare_thread)
 
         threading.Thread(target=worker, daemon=True).start()
 
