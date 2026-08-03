@@ -13,7 +13,6 @@ except Exception:
     faiss_batch = None
 
 DB_FILE = "cache.db"
-DUPLICATE_RESULTS_JSON = "duplicate_results.json"
 db_lock = threading.Lock()
 stop_event = threading.Event()
 hash_cache = {}
@@ -73,10 +72,28 @@ def build_groups(pairs):
     return list(groups.values())
 
 
-def format_result_filename(method, hash_size, aspect_ratio_tol, tolerance_rate):
+def _search_options_suffix(method, hash_size, aspect_ratio_tol, tolerance_rate):
     ratio_str = str(round(aspect_ratio_tol, 4)).replace('.', 'p')
     tol_str = str(round(tolerance_rate, 4)).replace('.', 'p')
-    return f"result_{method}_h{hash_size}_ratio{ratio_str}_tol{tol_str}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    return f"{method}_h{hash_size}_ratio{ratio_str}_tol{tol_str}"
+
+
+def duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance_rate):
+    return f"duplicate_results_{_search_options_suffix(method, hash_size, aspect_ratio_tol, tolerance_rate)}.json"
+
+
+def resolve_search_options(method=None, hash_size=None, aspect_ratio_tol=None, tolerance_rate=None):
+    if method is None or hash_size is None or aspect_ratio_tol is None or tolerance_rate is None:
+        options = load_config()
+        method = method if method is not None else options.get("compare_method", "ahash")
+        hash_size = hash_size if hash_size is not None else int(options.get("hash_size", 8))
+        aspect_ratio_tol = aspect_ratio_tol if aspect_ratio_tol is not None else float(options.get("aspect_ratio_tolerance", 0.02))
+        tolerance_rate = tolerance_rate if tolerance_rate is not None else float(options.get("tolerance_rate", 0.05))
+    return method, int(hash_size), float(aspect_ratio_tol), float(tolerance_rate)
+
+
+def format_result_filename(method, hash_size, aspect_ratio_tol, tolerance_rate):
+    return f"result_{_search_options_suffix(method, hash_size, aspect_ratio_tol, tolerance_rate)}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
 
 
 def write_result_file_if_any(method, hash_size, aspect_ratio_tol, tolerance_rate):
@@ -101,19 +118,29 @@ def write_result_file_if_any(method, hash_size, aspect_ratio_tol, tolerance_rate
         return None
 
 
-def save_duplicate_results_json():
+def save_duplicate_results_json(method=None, hash_size=None, aspect_ratio_tol=None, tolerance_rate=None):
+    method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options(
+        method, hash_size, aspect_ratio_tol, tolerance_rate
+    )
     with duplicates_lock:
         if not duplicate_pairs:
             return None
         groups = build_groups(duplicate_pairs)
     data = {
         "saved_at": datetime.now().isoformat(),
-        "groups": [sorted(list(g)) for g in groups]
+        "search_options": {
+            "method": method,
+            "hash_size": hash_size,
+            "aspect_ratio_tol": aspect_ratio_tol,
+            "tolerance_rate": tolerance_rate,
+        },
+        "groups": [sorted(list(g)) for g in groups],
     }
+    path = duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance_rate)
     try:
-        with open(DUPLICATE_RESULTS_JSON, "w", encoding="utf-8") as fh:
+        with open(path, "w", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False, indent=2)
-        return DUPLICATE_RESULTS_JSON
+        return path
     except Exception:
         return None
 
@@ -137,25 +164,46 @@ def _parse_duplicate_text_file(path):
         return []
 
 
-def load_duplicate_results_json():
-    if os.path.exists(DUPLICATE_RESULTS_JSON):
+def _load_groups_from_json(path, method, hash_size, aspect_ratio_tol, tolerance_rate):
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    saved_options = data.get("search_options")
+    if saved_options:
+        if (
+            saved_options.get("method") != method
+            or int(saved_options.get("hash_size", -1)) != hash_size
+            or round(float(saved_options.get("aspect_ratio_tol", -1)), 4) != round(aspect_ratio_tol, 4)
+            or round(float(saved_options.get("tolerance_rate", -1)), 4) != round(tolerance_rate, 4)
+        ):
+            return None
+    groups = data.get("groups", [])
+    pairs = set()
+    for group in groups:
+        for i in range(len(group)):
+            for j in range(i + 1, len(group)):
+                pairs.add(tuple(sorted((group[i], group[j]))))
+    with duplicates_lock:
+        duplicate_pairs.clear()
+        duplicate_pairs.update(pairs)
+    return groups
+
+
+def load_duplicate_results_json(method=None, hash_size=None, aspect_ratio_tol=None, tolerance_rate=None):
+    method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options(
+        method, hash_size, aspect_ratio_tol, tolerance_rate
+    )
+    json_path = duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance_rate)
+    if os.path.exists(json_path):
         try:
-            with open(DUPLICATE_RESULTS_JSON, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-            groups = data.get("groups", [])
-            pairs = set()
-            for group in groups:
-                for i in range(len(group)):
-                    for j in range(i + 1, len(group)):
-                        pairs.add(tuple(sorted((group[i], group[j]))))
-            with duplicates_lock:
-                duplicate_pairs.clear()
-                duplicate_pairs.update(pairs)
-            return groups
+            groups = _load_groups_from_json(json_path, method, hash_size, aspect_ratio_tol, tolerance_rate)
+            if groups is not None:
+                return groups
         except Exception:
             pass
 
-    txt_files = sorted(glob.glob("result_*.txt"), key=os.path.getmtime, reverse=True)
+    suffix = _search_options_suffix(method, hash_size, aspect_ratio_tol, tolerance_rate)
+    txt_pattern = f"result_{suffix}_*.txt"
+    txt_files = sorted(glob.glob(txt_pattern), key=os.path.getmtime, reverse=True)
     for txt_path in txt_files:
         groups = _parse_duplicate_text_file(txt_path)
         if groups:
@@ -816,7 +864,7 @@ def try_compare(folder_list):
     aspect_ratio_tol = float(options.get("aspect_ratio_tolerance", 0.02))
 
     if load_saved_results:
-        groups = load_duplicate_results_json()
+        groups = load_duplicate_results_json(method, hash_size, aspect_ratio_tol, tolerance_rate)
         if groups:
             logger.info(f"[bold cyan][알림] 이전 저장된 중복 결과 {len(groups)}개 그룹을 불러왔습니다.")
 
@@ -1206,14 +1254,14 @@ def try_compare(folder_list):
             pass
 
         try:
-            json_path = save_duplicate_results_json()
+            json_path = save_duplicate_results_json(method, hash_size, aspect_ratio_tol, tolerance_rate)
             if json_path and save_duplicate_results:
                 logger.info(f"[bold green][JSON 저장][/bold green] {json_path}")
         except Exception:
             pass
 
         if json_path:
-            logger.info(f"[bold green][비교 완료][/bold green] 소요 시간: {elapsed_time:.2f}초 (총 {total_compared:,}회 비교, JSON 저장: {DUPLICATE_RESULTS_JSON})")
+            logger.info(f"[bold green][비교 완료][/bold green] 소요 시간: {elapsed_time:.2f}초 (총 {total_compared:,}회 비교, JSON 저장: {json_path})")
         else:
             logger.info(f"[bold green][비교 완료][/bold green] 소요 시간: {elapsed_time:.2f}초 (총 {total_compared:,}회 비교)")
         return _compare_result(

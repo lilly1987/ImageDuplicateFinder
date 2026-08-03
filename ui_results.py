@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
 from PIL import Image, ImageTk
-from compare import load_duplicate_results_json
+from compare import load_duplicate_results_json, duplicate_results_json_path, resolve_search_options
 
 
 def show_duplicate_results_window(root, lang):
@@ -128,14 +128,29 @@ def show_duplicate_results_window(root, lang):
                 first_path = saved_groups[group_index][0]
                 open_folder_for_file(first_path)
 
+    def _current_results_path():
+        method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
+        return duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance_rate)
+
     def save_duplicate_groups_json(groups):
-        data = {"saved_at": datetime.now().isoformat(), "groups": groups}
-        with open("duplicate_results.json", "w", encoding="utf-8") as fh:
+        method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
+        data = {
+            "saved_at": datetime.now().isoformat(),
+            "search_options": {
+                "method": method,
+                "hash_size": hash_size,
+                "aspect_ratio_tol": aspect_ratio_tol,
+                "tolerance_rate": tolerance_rate,
+            },
+            "groups": groups,
+        }
+        with open(_current_results_path(), "w", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False, indent=2)
 
     def load_results():
         nonlocal saved_groups
-        groups = load_duplicate_results_json()
+        method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
+        groups = load_duplicate_results_json(method, hash_size, aspect_ratio_tol, tolerance_rate)
         if groups is None:
             messagebox.showinfo(lang["ui"].get("info", "정보"), lang["ui"].get("no_saved_results", "저장된 중복 검색 결과가 없습니다."))
             return []
