@@ -19,6 +19,7 @@ import atexit
 import json
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, wait, FIRST_COMPLETED, ALL_COMPLETED
+import numpy as np
 from PIL import Image
 import imagehash
 from config import load_config
@@ -931,12 +932,71 @@ def compare_files(file1, file2, method, hash_size, tolerance, verbose=False, use
     return item_elapsed, is_duplicate
 
 
+# 해시 문자열을 정수로 변환하는 전역 캐시
+_hash_int_cache = {}
+_hash_int_lock = threading.Lock()
+
+# 비교 캐시 메모리 선로드 여부
+_compare_cache_loaded = False
+_compare_cache_loaded_lock = threading.Lock()
+
+
+def preload_compare_cache(method, hash_size, max_memory_mb=0):
+    """
+    비교 캐시를 DB에서 메모리로 선로드.
+    - max_memory_mb: 0이면 전체 로드, 0 초과면 해당 메모리(MB)만큼만 로드
+    """
+    global _compare_cache_loaded
+    with _compare_cache_loaded_lock:
+        if _compare_cache_loaded:
+            return
+        _compare_cache_loaded = True
+
+    logger.info(f"[bold cyan][알림] 비교 캐시를 메모리에 선로드합니다. (max_memory_mb={max_memory_mb})[/bold cyan]")
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT file1, file2, is_duplicate FROM compare_cache WHERE method=? AND hash_size=?",
+            (method, hash_size)
+        )
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    loaded = 0
+    with compare_memory_lock:
+        for file1, file2, is_dup in rows:
+            cache_key = (file1, file2, method, hash_size)
+            compare_memory_cache[cache_key] = bool(is_dup)
+            loaded += 1
+            # max_memory_mb 제한: 대략 1건당 100바이트로 추정
+            if max_memory_mb > 0 and loaded * 100 >= max_memory_mb * 1024 * 1024:
+                break
+
+    logger.info(f"[bold cyan][알림] 비교 캐시 {loaded:,}건을 메모리에 로드했습니다.[/bold cyan]")
+
+def _hash_str_to_int(hash_str):
+    """해시 문자열을 정수로 변환 (메모리 캐시 사용)"""
+    with _hash_int_lock:
+        if hash_str in _hash_int_cache:
+            return _hash_int_cache[hash_str]
+    try:
+        val = int(str(hash_str), 16)
+    except Exception:
+        val = None
+    with _hash_int_lock:
+        _hash_int_cache[hash_str] = val
+    return val
+
+
 def compare_file_with_list(file1, file2_list, method, hash_size, tolerance, verbose=False, use_compare_cache=False, duplicate_limit=0, hashes=None):
     """
     한 파일을 여러 파일과 비교.
+    int.bit_count() 기반 해밍 거리 계산으로 빠르게 비교.
     - duplicate_limit: 중복 n건 도달 시 중단
     """
-    if is_stop_requested():
+    if is_stop_requested() or not file2_list:
         return 0, 0
 
     if hashes is not None:
@@ -946,6 +1006,11 @@ def compare_file_with_list(file1, file2_list, method, hash_size, tolerance, verb
     else:
         h1 = get_cached_file_hash((file1, method, hash_size))
     if h1 is None:
+        return 0, 0
+
+    # file1의 해시를 정수로 변환
+    h1_int = _hash_str_to_int(h1)
+    if h1_int is None:
         return 0, 0
 
     total = 0
@@ -963,7 +1028,7 @@ def compare_file_with_list(file1, file2_list, method, hash_size, tolerance, verb
         if h2 is None:
             continue
 
-        # 기존 비교 결과 확인
+        # 기존 비교 결과 확인 (메모리 캐시 우선)
         if use_compare_cache:
             cached_result = already_compared(file1, file2, method, hash_size)
             if cached_result is not None:
@@ -979,10 +1044,13 @@ def compare_file_with_list(file1, file2_list, method, hash_size, tolerance, verb
                         break
                 continue
 
-        diff = h1 - h2
-        is_duplicate = diff <= tolerance
-        if use_compare_cache:
-            add_compare_record(file1, file2, method, hash_size, is_duplicate)
+        # 해밍 거리 계산 (int.bit_count() - Python 3.10+)
+        h2_int = _hash_str_to_int(h2)
+        if h2_int is None:
+            continue
+        diff = h1_int ^ h2_int
+        hamming_distance = diff.bit_count()
+        is_duplicate = hamming_distance <= tolerance
 
         total += 1
         if is_duplicate:
@@ -994,6 +1062,10 @@ def compare_file_with_list(file1, file2_list, method, hash_size, tolerance, verb
             if duplicate_limit > 0 and duplicates >= duplicate_limit:
                 request_stop()
                 break
+
+        # 비교 결과 저장 (메모리 캐시 + DB 비동기 배치)
+        if use_compare_cache:
+            add_compare_record(file1, file2, method, hash_size, is_duplicate)
 
     return total, duplicates
 
@@ -1043,6 +1115,13 @@ def _resolve_compare_options(options):
     use_compare_cache = bool(options.get("use_compare_cache", True))
     aspect_ratio_tol = float(options.get("aspect_ratio_tolerance", 0.02))
     batch_size = int(options.get("hash_precompute_batch_size", 1000))
+    max_memory_mb = options.get("max_memory_mb", 0)
+    try:
+        max_memory_mb = int(max_memory_mb)
+        if max_memory_mb < 0:
+            max_memory_mb = 0
+    except Exception:
+        max_memory_mb = 0
     return {
         "search_mode": search_mode,
         "include_sub": include_sub,
@@ -1060,6 +1139,7 @@ def _resolve_compare_options(options):
         "use_compare_cache": use_compare_cache,
         "aspect_ratio_tol": aspect_ratio_tol,
         "batch_size": batch_size,
+        "max_memory_mb": max_memory_mb,
     }
 
 
@@ -1768,6 +1848,13 @@ def try_compare(folder_list):
 
     folders = [entry.split(": ", 1)[1] for entry in folder_list.get(0, "end")]
     init_db()
+
+    # 비교 캐시를 메모리에 선로드 (DB 조회 병목 제거)
+    if use_compare_cache:
+        try:
+            preload_compare_cache(method, hash_size, compare_options.get("max_memory_mb", 0))
+        except Exception:
+            pass
 
     try:
         total_compared, total_duplicates, total_pairs, compare_file_paths = _run_compare_branch(

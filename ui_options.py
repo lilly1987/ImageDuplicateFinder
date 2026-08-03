@@ -102,6 +102,12 @@ def show_options(root, lang):
     tk.Entry(scrollable_frame, textvariable=max_files_var).pack(anchor="w")
     tk.Label(scrollable_frame, text="0 초과 시 기존에 비교한 파일쌍은 건너뛰고, 추가로 비교할 파일 갯수만큼만 비교합니다. 0이면 전체를 비교합니다.", fg="gray").pack(anchor="w")
 
+    # --- 최대 메모리 사용량 ---
+    tk.Label(scrollable_frame, text=lang["ui"].get("max_memory_mb", "비교 캐시 메모리 사용량 (MB)"), font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 2))
+    max_memory_var = tk.IntVar(value=config.get("max_memory_mb", 0))
+    tk.Entry(scrollable_frame, textvariable=max_memory_var).pack(anchor="w")
+    tk.Label(scrollable_frame, text="비교 결과 캐시를 메모리에 로드할 때 사용할 최대 메모리(MB)입니다. 0이면 전체를 로드합니다. 시스템 메모리를 고려해 설정하세요.", fg="gray").pack(anchor="w")
+
     # --- 비교 캐시 사용 ---
     use_compare_cache_var = tk.BooleanVar(value=config.get("use_compare_cache", True))
     tk.Checkbutton(scrollable_frame, text=lang["ui"].get("use_compare_cache", "비교 결과 캐시 사용 (중단 후 이어하기)"), variable=use_compare_cache_var).pack(anchor="w", pady=(10, 2))
@@ -131,6 +137,7 @@ def show_options(root, lang):
         config["hash_precompute_batch_size"] = batch_size_var.get()
         config["max_hash_compute_files"] = max_hash_compute_var.get()
         config["max_compare_files"] = max_files_var.get()
+        config["max_memory_mb"] = max_memory_var.get()
         config["use_compare_cache"] = use_compare_cache_var.get()
         config["save_duplicate_results"] = save_duplicate_var.get()
         config["load_saved_results_on_start"] = load_saved_var.get()
