@@ -17,6 +17,52 @@ from folder_list import (
 from compare import try_compare, request_stop, reset_stop
 from logger import logger
 
+
+# ============================================================
+# 창 중복 생성 방지 (종류별 최대 1개)
+# ============================================================
+_open_windows = {}  # {창종류: Toplevel 인스턴스}
+
+
+def show_single_window(window_key, create_fn, root, lang):
+    """
+    종류별로 창을 최대 1개만 생성.
+    이미 열려있으면 해당 창에 포커스를 주고 새로 만들지 않음.
+    - window_key: 창 식별자 (예: "options", "results", "settings")
+    - create_fn: 창 생성 함수 (root, lang을 인자로 받음)
+    """
+    # 이미 열려있는 창이 있으면 포커스만 이동
+    existing = _open_windows.get(window_key)
+    if existing is not None:
+        try:
+            if existing.winfo_exists():
+                existing.lift()
+                existing.focus_force()
+                return
+        except Exception:
+            pass
+        # 창이 닫혔으면 정리
+        _open_windows.pop(window_key, None)
+
+    # 새 창 생성
+    win = create_fn(root, lang)
+
+    # 창이 닫힐 때 _open_windows에서 제거되도록 설정
+    def on_window_close():
+        _open_windows.pop(window_key, None)
+        try:
+            win.destroy()
+        except Exception:
+            pass
+
+    try:
+        win.protocol("WM_DELETE_WINDOW", on_window_close)
+    except Exception:
+        pass
+
+    _open_windows[window_key] = win
+    return win
+
 def main():
     # 설정 및 언어 로드
     config = load_config()
@@ -50,7 +96,7 @@ def main():
 
     
     tk.Button(info_frame, text=lang["ui"]["settings_button"],
-              command=lambda: show_settings_window(root, lang)).pack(side="left")
+              command=lambda: show_single_window("settings", show_settings_window, root, lang)).pack(side="left")
 
     count_label = create_count_label(info_frame, lang)
     count_label.pack(side="left", padx=(0, 2))
@@ -100,7 +146,7 @@ def main():
               command=lambda: clear_list(folder_list, update_count, lang, count_label)).pack(side="left")
 
     tk.Button(button_frame, text=lang["ui"]["options_button"],
-                  command=lambda: show_options(root, lang)).pack(side="left")
+                  command=lambda: show_single_window("options", show_options, root, lang)).pack(side="left")
 
     is_comparing = False
     user_stop_flag = {"requested": False}
@@ -125,7 +171,7 @@ def main():
     stop_btn.pack(side="left")
 
     tk.Button(button_frame, text=lang["ui"].get("duplicate_results_window", "중복 결과"),
-              command=lambda: show_duplicate_results_window(root, lang)).pack(side="left")
+              command=lambda: show_single_window("results", show_duplicate_results_window, root, lang)).pack(side="left")
 
     def on_stop_click():
         user_stop_flag["requested"] = True
@@ -154,9 +200,10 @@ def main():
                 result = try_compare(folder_list)
                 total_duplicates = result.get("total_duplicates", 0) if isinstance(result, dict) else (result or 0)
                 has_remaining = bool(result.get("has_remaining", False)) if isinstance(result, dict) else False
-                options = load_config()
-                if total_duplicates and options.get("auto_open_duplicate_results", False):
-                    root.after(0, lambda: show_duplicate_results_window(root, lang))
+                # 비교 완료 시 결과창 자동 오픈 제거 (사용자가 직접 열도록)
+                # 중복이 발견된 경우 로그로만 알림
+                if total_duplicates:
+                    logger.info(f"[bold green][알림] 중복 {total_duplicates}건 발견. '중복 결과' 버튼으로 확인하세요.[/bold green]")
             except Exception as e:
                 logger.error(f"[bold red][오류][/bold red] 비교 도중 예외가 발생했습니다: {e}")
             finally:

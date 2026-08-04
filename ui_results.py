@@ -419,10 +419,12 @@ def show_duplicate_results_window(root, lang):
                 pass
             live_refresh_after_id["id"] = None
 
-    # 창이 닫힐 때 실시간 갱신 중지
-    win.protocol("WM_DELETE_WINDOW", lambda: (stop_live_refresh(), win.destroy()))
-
     # 실시간 갱신 시작
     refresh_live_groups()
+
+    # 창이 닫힐 때 실시간 갱신 중지
+    # (run.py의 show_single_window에서 WM_DELETE_WINDOW를 관리하므로
+    #  여기서는 별도로 설정하지 않고, stop_live_refresh를 atexit 대용으로 등록)
+    win.bind("<Destroy>", lambda e: stop_live_refresh())
 
     load_results()
