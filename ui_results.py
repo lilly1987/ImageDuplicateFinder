@@ -391,6 +391,18 @@ def show_duplicate_results_window(root, lang):
     tk.Button(button_bar, text=lang["ui"].get("delete_selected_items", "선택 항목 실제 파일 삭제"), command=delete_selected_files).pack(side="left")
     tk.Button(button_bar, text=lang["ui"].get("invert_selection", "선택 항목 반전"), command=invert_selection).pack(side="left")
 
+    def refresh_results():
+        """새로고침: 삭제/제거한 항목을 원본에 반영 후 원본에서 다시 복사해오기"""
+        # 1. 삭제/제거된 항목을 원본에 반영
+        apply_changes_on_close()
+        # 2. deleted_paths 초기화 (이미 반영했으므로)
+        deleted_paths.clear()
+        # 3. 원본에서 다시 복사본 가져오기
+        load_results()
+        logger.info("[bold cyan][알림] 결과창 새로고침 완료[/bold cyan]")
+
+    tk.Button(button_bar, text=lang["ui"].get("refresh_results", "새로고침"), command=refresh_results).pack(side="left")
+
     def on_delete_key(event):
         remove_selected_items()
         return "break"
