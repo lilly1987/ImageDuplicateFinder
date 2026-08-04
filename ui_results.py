@@ -42,31 +42,56 @@ def show_duplicate_results_window(root, lang):
     search_combo.pack(side="left", padx=(0, 10))
 
     def refresh_search_list():
-        """DB에서 사용 가능한 (method, hash_size) 조합 목록 조회"""
+        """DB 테이블과 JSON 파일에서 사용 가능한 검색 결과 목록 조회"""
         from database import db_lock, _get_all_table_names
         import sqlite3
         from compare import DB_FILE
+        import glob
         options = []
+        seen = set()
+
+        # 1. DB 테이블에서 (method, hash_size) 추출
         try:
             with db_lock:
                 conn = sqlite3.connect(DB_FILE, timeout=30)
                 cur = conn.cursor()
-                # duplicate_results 테이블들에서 (method, hash_size) 추출
                 tables = _get_all_table_names(cur, "duplicate_results")
                 for table in tables:
-                    # 테이블명에서 method와 hash_size 추출 (예: duplicate_results_ahash_8)
                     parts = table.split("_", 3)
                     if len(parts) >= 4:
                         method = parts[2]
                         try:
                             hash_size = int(parts[3])
-                            options.append((f"{method} / hash_size={hash_size}", method, hash_size))
+                            key = (method, hash_size)
+                            if key not in seen:
+                                seen.add(key)
+                                options.append((f"{method} / hash_size={hash_size}", method, hash_size))
                         except ValueError:
                             pass
                 conn.close()
         except Exception:
             pass
-        # 건수가 있는 것만 필터링
+
+        # 2. JSON 파일에서도 추출 (예: duplicate_results_ahash_h16_ratio0p01_tol0p0039.json)
+        for json_path in glob.glob("duplicate_results_*.json"):
+            try:
+                # 파일명 파싱: duplicate_results_{method}_h{hash_size}_ratio{ratio}_tol{tolerance}.json
+                basename = os.path.splitext(os.path.basename(json_path))[0]
+                parts = basename.split("_")
+                # parts[0] = "duplicate", parts[1] = "results", parts[2] = method, parts[3] = "h{hash_size}", ...
+                if len(parts) >= 4 and parts[0] == "duplicate" and parts[1] == "results":
+                    method = parts[2]
+                    hash_size_str = parts[3]
+                    if hash_size_str.startswith("h"):
+                        hash_size = int(hash_size_str[1:])
+                        key = (method, hash_size)
+                        if key not in seen:
+                            seen.add(key)
+                            options.append((f"{method} / hash_size={hash_size}", method, hash_size))
+            except Exception:
+                pass
+
+        # 3. 건수가 있는 것만 필터링
         valid_options = []
         for label, method, hash_size in options:
             try:
