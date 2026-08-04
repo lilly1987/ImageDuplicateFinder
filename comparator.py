@@ -361,6 +361,46 @@ def collect_candidate_pairs(paths, block_index):
     return candidates
 
 
+def collect_candidate_pairs_bktree(paths, hashes, tolerance):
+    """
+    BK-Tree 기반 후보 쌍 수집 (대용량에 적합).
+    - 해시 값을 정수로 변환하여 BK-Tree에 삽입
+    - tolerance 이하의 해밍 거리를 가진 쌍만 후보로 선별
+    - 기존 버킷 방식보다 탐색 범위를 획기적으로 줄임
+    """
+    from bk_match import BKTree, _hash_to_int, _hamming
+
+    # 경로-해시정수 매핑 (유효한 해시만)
+    path_int_map = {}
+    for path in paths:
+        h = hashes.get(path)
+        if h is None:
+            continue
+        h_int = _hash_to_int(h)
+        if h_int is not None:
+            path_int_map[path] = h_int
+
+    if not path_int_map:
+        return {path: set() for path in paths}
+
+    # BK-Tree 구축
+    bktree = BKTree()
+    int_path_map = {}  # h_int → [paths]
+    for path, h_int in path_int_map.items():
+        bktree.insert(h_int, path)
+        int_path_map.setdefault(h_int, []).append(path)
+
+    # 각 파일에 대해 tolerance 이내의 후보 찾기
+    candidates = {path: set() for path in paths}
+    for path, h_int in path_int_map.items():
+        matches = bktree.query(h_int, tolerance)
+        for matched_path, dist in matches:
+            if matched_path != path:
+                candidates[path].add(matched_path)
+
+    return candidates
+
+
 def filter_batch_candidates(file1, batch, candidates):
     """후보 목록으로 배치 필터링"""
     if candidates is None:

@@ -9,7 +9,7 @@ import os
 
 from config import load_config
 from logger import logger
-from comparator import get_processed_compare_files, get_hash_prefix_bits, build_hash_buckets, collect_candidate_pairs
+from comparator import get_processed_compare_files, get_hash_prefix_bits, build_hash_buckets, collect_candidate_pairs, collect_candidate_pairs_bktree
 from hasher import precompute_hashes
 from state import is_stop_requested
 
@@ -24,7 +24,15 @@ def _resolve_compare_options(options):
     method = options.get("compare_method", "ahash")
     hash_size = int(options.get("hash_size", 8))
     tolerance_rate = float(options.get("tolerance_rate", 0.05))
-    tolerance = max(0, min(hash_size * hash_size, int(round(tolerance_rate * hash_size * hash_size))))
+    # tolerance_hamming(정수 해밍 거리)이 있으면 우선 사용, 없으면 tolerance_rate에서 변환
+    tolerance_hamming = options.get("tolerance_hamming", None)
+    if tolerance_hamming is not None:
+        try:
+            tolerance = max(0, min(hash_size * hash_size, int(tolerance_hamming)))
+        except Exception:
+            tolerance = max(0, min(hash_size * hash_size, int(round(tolerance_rate * hash_size * hash_size))))
+    else:
+        tolerance = max(0, min(hash_size * hash_size, int(round(tolerance_rate * hash_size * hash_size))))
     duplicate_limit = options.get("duplicate_limit_count", 1000)
     try:
         duplicate_limit = int(duplicate_limit)
@@ -429,12 +437,20 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
         missing_count = len(all_target_files) - len(hashes)
         logger.info(f"Hashes precomputed: entries={len(hashes)}, valid={valid}, none={none_count}, missing={missing_count}")
 
-        prefix_bits = get_hash_prefix_bits(hash_size)
-        bucket_index = build_hash_buckets(all_target_files, hashes, prefix_bits)
-        bucket_count = len(bucket_index)
-        max_bucket = max((len(v) for v in bucket_index.values()), default=0)
-        logger.info(f"Built {bucket_count} buckets (prefix_bits={prefix_bits}), max_bucket_size={max_bucket}")
-        candidates = collect_candidate_pairs(all_target_files, bucket_index)
+        # BK-Tree 기반 후보 선별 (대용량에 적합)
+        use_bktree = options.get("use_bktree", True)
+        if use_bktree and len(all_target_files) > 1000:
+            logger.info(f"Building BK-Tree for {len(all_target_files)} files (tolerance={tolerance})...")
+            candidates = collect_candidate_pairs_bktree(all_target_files, hashes, tolerance)
+            candidate_count = sum(len(v) for v in candidates.values())
+            logger.info(f"BK-Tree candidates: {candidate_count:,} pairs")
+        else:
+            prefix_bits = get_hash_prefix_bits(hash_size)
+            bucket_index = build_hash_buckets(all_target_files, hashes, prefix_bits)
+            bucket_count = len(bucket_index)
+            max_bucket = max((len(v) for v in bucket_index.values()), default=0)
+            logger.info(f"Built {bucket_count} buckets (prefix_bits={prefix_bits}), max_bucket_size={max_bucket}")
+            candidates = collect_candidate_pairs(all_target_files, bucket_index)
 
         if is_stop_requested():
             logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
@@ -491,12 +507,20 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
         missing_count = len(all_files) - len(hashes)
         logger.info(f"Hashes precomputed: entries={len(hashes)}, valid={valid}, none={none_count}, missing={missing_count}")
 
-        prefix_bits = get_hash_prefix_bits(hash_size)
-        bucket_index = build_hash_buckets(all_files, hashes, prefix_bits)
-        bucket_count = len(bucket_index)
-        max_bucket = max((len(v) for v in bucket_index.values()), default=0)
-        logger.info(f"Built {bucket_count} buckets (prefix_bits={prefix_bits}), max_bucket_size={max_bucket}")
-        candidates = collect_candidate_pairs(all_files, bucket_index)
+        # BK-Tree 기반 후보 선별 (대용량에 적합)
+        use_bktree = options.get("use_bktree", True)
+        if use_bktree and len(all_files) > 1000:
+            logger.info(f"Building BK-Tree for {len(all_files)} files (tolerance={tolerance})...")
+            candidates = collect_candidate_pairs_bktree(all_files, hashes, tolerance)
+            candidate_count = sum(len(v) for v in candidates.values())
+            logger.info(f"BK-Tree candidates: {candidate_count:,} pairs")
+        else:
+            prefix_bits = get_hash_prefix_bits(hash_size)
+            bucket_index = build_hash_buckets(all_files, hashes, prefix_bits)
+            bucket_count = len(bucket_index)
+            max_bucket = max((len(v) for v in bucket_index.values()), default=0)
+            logger.info(f"Built {bucket_count} buckets (prefix_bits={prefix_bits}), max_bucket_size={max_bucket}")
+            candidates = collect_candidate_pairs(all_files, bucket_index)
 
         if is_stop_requested():
             logger.warning("[bold yellow][비교 중단됨][/bold yellow]")

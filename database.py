@@ -33,6 +33,25 @@ DB_WRITE_FLUSH_INTERVAL = 2.0
 DB_WRITE_BATCH_SIZE = 1000
 
 
+def set_db_write_options(flush_interval=None, batch_size=None):
+    """DB 비동기 쓰기 옵션 설정 (config.yml에서 호출)"""
+    global DB_WRITE_FLUSH_INTERVAL, DB_WRITE_BATCH_SIZE
+    if flush_interval is not None:
+        try:
+            flush_interval = float(flush_interval)
+            if flush_interval > 0:
+                DB_WRITE_FLUSH_INTERVAL = flush_interval
+        except Exception:
+            pass
+    if batch_size is not None:
+        try:
+            batch_size = int(batch_size)
+            if batch_size > 0:
+                DB_WRITE_BATCH_SIZE = batch_size
+        except Exception:
+            pass
+
+
 # ============================================================
 # DB 초기화 및 스키마
 # ============================================================

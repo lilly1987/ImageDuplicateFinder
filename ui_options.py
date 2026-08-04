@@ -1,4 +1,5 @@
 import tkinter as tk
+from tkinter import ttk
 from config import load_config, save_config
 
 def show_options(root, lang):
@@ -60,11 +61,25 @@ def show_options(root, lang):
         tk.Radiobutton(scrollable_frame, text=text, variable=method_var, value=val).pack(anchor="w")
     tk.Label(scrollable_frame, text="이미지 해시 알고리즘을 선택합니다. 알고리즘마다 유사성 판단 기준이 다릅니다.", fg="gray").pack(anchor="w")
 
-    # --- 해시 크기 ---
+    # --- 해시 크기 (2의 제곱수만 허용 - 드롭다운) ---
     tk.Label(scrollable_frame, text=lang["ui"].get("hash_size", "해시 크기 (값이 클수록 정밀하지만 느려짐)"), font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 2))
     size_var = tk.IntVar(value=config.get("hash_size", 8))
-    tk.Entry(scrollable_frame, textvariable=size_var).pack(anchor="w")
-    tk.Label(scrollable_frame, text="해시 크기가 클수록 더 정밀하게 비교하지만 계산 시간과 저장 공간이 늘어납니다. (예: 8, 16, 32)", fg="gray").pack(anchor="w")
+    # imagehash는 hash_size=2의 제곱수만 지원하므로 드롭다운으로 제한
+    hash_size_options = [8, 16, 32, 64]
+    # config 값이 목록에 없으면 가장 가까운 상위 값으로 보정
+    config_hash_size = config.get("hash_size", 8)
+    if config_hash_size not in hash_size_options:
+        config_hash_size = next((s for s in hash_size_options if s >= config_hash_size), 64)
+    size_var = tk.IntVar(value=config_hash_size)
+    size_combo = ttk.Combobox(
+        scrollable_frame,
+        textvariable=size_var,
+        values=hash_size_options,
+        state="readonly",
+        width=10,
+    )
+    size_combo.pack(anchor="w")
+    tk.Label(scrollable_frame, text="해시 크기는 2의 제곱수(8, 16, 32, 64)만 지원합니다. 클수록 더 정밀하지만 계산 시간과 저장 공간이 늘어납니다.", fg="gray").pack(anchor="w")
 
     # --- 해상도 비율 허용 오차 ---
     tk.Label(scrollable_frame, text=lang["ui"].get("ratio_tolerance", "해상도 비율 허용 오차 (예: 0.02)"), font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 2))
@@ -72,11 +87,17 @@ def show_options(root, lang):
     tk.Entry(scrollable_frame, textvariable=ratio_var).pack(anchor="w")
     tk.Label(scrollable_frame, text="이미지의 가로/세로 비율이 얼마나 달라도 같은 이미지로 볼지 결정합니다. 0.02는 2% 차이까지 허용합니다.", fg="gray").pack(anchor="w")
 
-    # --- 오차율 ---
-    tk.Label(scrollable_frame, text=lang["ui"].get("tolerance_rate", "허용 오차율(%)"), font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 2))
-    rate_var = tk.DoubleVar(value=config.get("tolerance_rate", 0.05))
+    # --- 오차값 (정수형 해밍 거리) ---
+    tk.Label(scrollable_frame, text=lang["ui"].get("tolerance_rate", "허용 오차 (해밍 거리)"), font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 2))
+    # 기존 tolerance_rate(비율)를 정수 해밍 거리로 변환
+    current_hash_size = int(size_var.get())
+    current_rate = float(config.get("tolerance_rate", 0.05))
+    # 비율 → 정수 해밍 거리로 변환
+    default_hamming = max(0, min(current_hash_size * current_hash_size, int(round(current_rate * current_hash_size * current_hash_size))))
+    # 이미 정수로 저장된 경우 (tolerance_hamming)
+    rate_var = tk.IntVar(value=config.get("tolerance_hamming", default_hamming))
     tk.Entry(scrollable_frame, textvariable=rate_var).pack(anchor="w")
-    tk.Label(scrollable_frame, text="해시 값이 얼마나 달라도 중복으로 판정할지 결정합니다. 0.05는 5% 차이까지 허용합니다. 0이면 완전히 같은 해시만 중복으로 판정합니다.", fg="gray").pack(anchor="w")
+    tk.Label(scrollable_frame, text="해시 값이 몇 비트까지 달라도 중복으로 판정할지 정수로 입력합니다. (예: 0 = 완전히 같은 해시만, 2 = 비트 2개까지 허용)", fg="gray").pack(anchor="w")
 
     # --- 중복 제한 ---
     tk.Label(scrollable_frame, text=lang["ui"].get("duplicate_limit", "중복 n건 도달시 중단"), font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 2))
@@ -132,7 +153,12 @@ def show_options(root, lang):
         config["include_subfolders"] = sub_var.get()
         config["compare_method"] = method_var.get()
         config["hash_size"] = size_var.get()
-        config["tolerance_rate"] = rate_var.get()
+        # 정수 해밍 거리를 tolerance_hamming으로 저장
+        # 기존 tolerance_rate(비율)도 역산하여 저장 (하위 호환)
+        hamming = rate_var.get()
+        config["tolerance_hamming"] = hamming
+        hs = size_var.get()
+        config["tolerance_rate"] = (hamming / (hs * hs)) if hs > 0 else 0.0
         config["duplicate_limit_count"] = duplicate_limit_var.get()
         config["hash_precompute_batch_size"] = batch_size_var.get()
         config["max_hash_compute_files"] = max_hash_compute_var.get()

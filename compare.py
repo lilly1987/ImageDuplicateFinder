@@ -25,6 +25,7 @@ from database import (
     init_db,
     _flush_db_writes,
     stop_db_writer,
+    set_db_write_options,
 )
 from state import (
     stop_event,
@@ -129,6 +130,11 @@ def try_compare(folder_list):
     # 스레드/프로세스 갯수 설정 (0이면 CPU 코어 기반 자동)
     set_hash_worker_count(compare_options.get("hash_worker_count", 0))
     set_compare_worker_count(compare_options.get("compare_worker_count", 0))
+    # DB 비동기 쓰기 옵션 설정
+    set_db_write_options(
+        flush_interval=options.get("db_flush_interval", 2.0),
+        batch_size=options.get("db_batch_size", 1000),
+    )
     search_mode = compare_options["search_mode"]
     include_sub = compare_options["include_sub"]
     method = compare_options["method"]
@@ -247,7 +253,7 @@ __all__ = [
     "save_duplicate_results_to_db", "load_duplicate_results_from_db",
     "remove_missing_files_from_cache",
     "hash_to_int", "get_hash_prefix_bits", "hash_prefix_key",
-    "build_hash_buckets", "collect_candidate_pairs", "filter_batch_candidates",
+    "build_hash_buckets", "collect_candidate_pairs", "collect_candidate_pairs_bktree", "filter_batch_candidates",
     "compare_files", "compare_file_with_list", "preload_compare_cache",
     # collector
     "_resolve_compare_options", "_collect_files_for_mode", "_apply_max_compare_files",
