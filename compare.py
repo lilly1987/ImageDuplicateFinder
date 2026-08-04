@@ -44,6 +44,7 @@ from hasher import (
     get_file_hash,
     get_cached_file_hash,
     precompute_hashes,
+    set_hash_worker_count,
 )
 from comparator import (
     make_pair_key,
@@ -66,6 +67,7 @@ from comparator import (
     compare_files,
     compare_file_with_list,
     preload_compare_cache,
+    set_compare_worker_count,
 )
 from collector import (
     _resolve_compare_options,
@@ -124,6 +126,9 @@ def try_compare(folder_list):
     logger.info("[bold yellow][비교 시작][/bold yellow]")
     options = load_config()
     compare_options = _resolve_compare_options(options)
+    # 스레드/프로세스 갯수 설정 (0이면 CPU 코어 기반 자동)
+    set_hash_worker_count(compare_options.get("hash_worker_count", 0))
+    set_compare_worker_count(compare_options.get("compare_worker_count", 0))
     search_mode = compare_options["search_mode"]
     include_sub = compare_options["include_sub"]
     method = compare_options["method"]

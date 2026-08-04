@@ -41,7 +41,11 @@ def init_db():
     with db_lock:
         conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         try:
+            # WAL 모드 활성화: 강제 종료 시 데이터 손상 방지 + 읽기/쓰기 동시성 향상
             cur = conn.cursor()
+            cur.execute("PRAGMA journal_mode=WAL")
+            cur.execute("PRAGMA synchronous=NORMAL")
+            cur.execute("PRAGMA busy_timeout=30000")
             # 해시 캐시: 파일 경로 + 알고리즘 + 해시 크기별 해시값
             cur.execute("""CREATE TABLE IF NOT EXISTS hash_cache (
                 path TEXT,

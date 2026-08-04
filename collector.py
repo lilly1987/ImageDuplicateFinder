@@ -66,6 +66,28 @@ def _resolve_compare_options(options):
             max_memory_mb = 0
     except Exception:
         max_memory_mb = 0
+    # 스레드/프로세스 갯수 (0이면 CPU 코어 기반 자동)
+    hash_worker_count = options.get("hash_worker_count", 0)
+    try:
+        hash_worker_count = int(hash_worker_count)
+        if hash_worker_count < 0:
+            hash_worker_count = 0
+    except Exception:
+        hash_worker_count = 0
+    compare_worker_count = options.get("compare_worker_count", 0)
+    try:
+        compare_worker_count = int(compare_worker_count)
+        if compare_worker_count < 0:
+            compare_worker_count = 0
+    except Exception:
+        compare_worker_count = 0
+    scan_batch_size = options.get("scan_batch_size", 1000)
+    try:
+        scan_batch_size = int(scan_batch_size)
+        if scan_batch_size < 1:
+            scan_batch_size = 1000
+    except Exception:
+        scan_batch_size = 1000
     return {
         "search_mode": search_mode,
         "include_sub": include_sub,
@@ -84,6 +106,9 @@ def _resolve_compare_options(options):
         "aspect_ratio_tol": aspect_ratio_tol,
         "batch_size": batch_size,
         "max_memory_mb": max_memory_mb,
+        "hash_worker_count": hash_worker_count,
+        "compare_worker_count": compare_worker_count,
+        "scan_batch_size": scan_batch_size,
     }
 
 
@@ -255,6 +280,109 @@ def _estimate_compare_total_pairs(search_mode, folder_files, all_files, new_comp
 
 
 # ============================================================
+# 스캔-해시 파이프라인 (배치 단위 병렬 처리)
+# ============================================================
+def _scan_and_hash_pipeline(folders, include_sub, search_mode, method, hash_size, batch_size, max_new_hashes=0, previous_paths=None):
+    """
+    파일 스캔과 해시 계산을 배치 단위로 파이프라인 처리.
+    - 스캔이 완료되기 전에 해시 계산을 시작하여 전체 시간 단축.
+    - 반환: (folder_files, all_files, hashes)
+    """
+    from hasher import precompute_hashes
+    from state import is_stop_requested
+
+    folder_files = {}
+    all_files = []
+    hashes = {}
+
+    def _process_batch(batch_paths):
+        """배치 단위 해시 계산"""
+        if not batch_paths or is_stop_requested():
+            return {}
+        return precompute_hashes(
+            batch_paths,
+            method,
+            hash_size,
+            batch_size=batch_size,
+            max_new_hashes=max_new_hashes,
+            previous_paths=previous_paths,
+        )
+
+    if search_mode == "cross_folder":
+        for folder in folders:
+            files = []
+            batch = []
+            if include_sub:
+                for root_dir, dirs, fs in os.walk(folder):
+                    for file in fs:
+                        full = os.path.join(root_dir, file)
+                        if os.path.isfile(full):
+                            files.append(full)
+                            all_files.append(full)
+                            batch.append(full)
+                            if len(batch) >= batch_size:
+                                hashes.update(_process_batch(batch))
+                                batch = []
+                                if is_stop_requested():
+                                    break
+                    if is_stop_requested():
+                        break
+            else:
+                for file in os.listdir(folder):
+                    full = os.path.join(folder, file)
+                    if os.path.isfile(full):
+                        files.append(full)
+                        all_files.append(full)
+                        batch.append(full)
+                        if len(batch) >= batch_size:
+                            hashes.update(_process_batch(batch))
+                            batch = []
+                            if is_stop_requested():
+                                break
+            # 남은 배치 처리
+            if batch:
+                hashes.update(_process_batch(batch))
+            folder_files[folder] = files
+            if is_stop_requested():
+                break
+        return folder_files, all_files, hashes
+
+    # all_folders 모드
+    batch = []
+    for folder in folders:
+        if include_sub:
+            for root_dir, dirs, fs in os.walk(folder):
+                for file in fs:
+                    full = os.path.join(root_dir, file)
+                    if os.path.isfile(full):
+                        all_files.append(full)
+                        batch.append(full)
+                        if len(batch) >= batch_size:
+                            hashes.update(_process_batch(batch))
+                            batch = []
+                            if is_stop_requested():
+                                break
+                if is_stop_requested():
+                    break
+        else:
+            for file in os.listdir(folder):
+                full = os.path.join(folder, file)
+                if os.path.isfile(full):
+                    all_files.append(full)
+                    batch.append(full)
+                    if len(batch) >= batch_size:
+                        hashes.update(_process_batch(batch))
+                        batch = []
+                        if is_stop_requested():
+                            break
+        if is_stop_requested():
+            break
+    if batch:
+        hashes.update(_process_batch(batch))
+    return None, all_files, hashes
+
+
+# ============================================================
 # 비교 실행 분기 (메인 로직)
 # ============================================================
 def _run_compare_branch(search_mode, folders, include_sub, options, method, hash_size, tolerance, duplicate_limit, max_compare_files, max_hash_compute_files, use_compare_cache, start_time, aspect_ratio_tol, tolerance_rate, compare_progress_log_interval=0):
@@ -268,10 +396,14 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
 
     if search_mode == "cross_folder":
         logger.info("[bold cyan]cross_folder 모드[/bold cyan]")
-        folder_files, all_target_files = _collect_files_for_mode(folders, include_sub, search_mode)
+        # 스캔-해시 파이프라인: 스캔하면서 배치 단위로 해시 계산
+        scan_batch = options.get("scan_batch_size", 1000)
+        folder_files, all_target_files, hashes = _scan_and_hash_pipeline(
+            folders, include_sub, search_mode, method, hash_size,
+            batch_size=scan_batch,
+            max_new_hashes=max_hash_compute_files,
+        )
         logger.info(f"total={len(all_target_files)}")
-        # 해시 계산은 전체 파일 기준으로 수행 (max_compare_files 적용 전)
-        full_file_paths = list(all_target_files)
         folder_files, all_target_files = _apply_max_compare_files(search_mode, folder_files, all_target_files, max_compare_files, method, hash_size)
         compare_file_paths = list(all_target_files)
         new_compare_files_set, baseline_compare_files, new_compare_files = _prepare_incremental_targets(compare_file_paths, method, hash_size)
@@ -287,14 +419,11 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
             logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
             return 0, total_duplicates, 0, compare_file_paths
 
-        logger.info(f"Precomputing hashes for {len(full_file_paths)} files...")
-        hashes = precompute_hashes(
-            full_file_paths,
-            method,
-            hash_size,
-            batch_size=options.get("hash_precompute_batch_size", 1000),
-            max_new_hashes=max_hash_compute_files,
-        )
+        # max_compare_files 적용 후 hashes 필터링
+        if max_compare_files > 0:
+            target_set = set(all_target_files)
+            hashes = {p: h for p, h in hashes.items() if p in target_set}
+
         valid = sum(1 for v in hashes.values() if v)
         none_count = sum(1 for v in hashes.values() if v is None)
         missing_count = len(all_target_files) - len(hashes)
@@ -330,9 +459,13 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
         )
     else:
         logger.info("[bold cyan][all_folders 모드][/bold cyan]")
-        _, all_collected_files = _collect_files_for_mode(folders, include_sub, search_mode)
-        # 해시 계산은 전체 파일 기준으로 수행 (max_compare_files 적용 전)
-        full_file_paths = list(all_collected_files)
+        # 스캔-해시 파이프라인: 스캔하면서 배치 단위로 해시 계산
+        scan_batch = options.get("scan_batch_size", 1000)
+        _, all_collected_files, hashes = _scan_and_hash_pipeline(
+            folders, include_sub, search_mode, method, hash_size,
+            batch_size=scan_batch,
+            max_new_hashes=max_hash_compute_files,
+        )
         _, all_files = _apply_max_compare_files(search_mode, None, all_collected_files, max_compare_files, method, hash_size)
         compare_file_paths = list(all_files)
         new_compare_files_set, baseline_compare_files, new_compare_files = _prepare_incremental_targets(compare_file_paths, method, hash_size)
@@ -348,14 +481,11 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
             logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
             return 0, total_duplicates, 0, compare_file_paths
 
-        logger.info(f"Precomputing hashes for {len(full_file_paths)} files...")
-        hashes = precompute_hashes(
-            full_file_paths,
-            method,
-            hash_size,
-            batch_size=options.get("hash_precompute_batch_size", 1000),
-            max_new_hashes=max_hash_compute_files,
-        )
+        # max_compare_files 적용 후 hashes 필터링
+        if max_compare_files > 0:
+            target_set = set(all_files)
+            hashes = {p: h for p, h in hashes.items() if p in target_set}
+
         valid = sum(1 for v in hashes.values() if v)
         none_count = sum(1 for v in hashes.values() if v is None)
         missing_count = len(all_files) - len(hashes)

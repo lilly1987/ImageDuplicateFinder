@@ -17,16 +17,23 @@ from state import hash_memory_cache, hash_memory_lock, is_stop_requested
 
 # 해시 계산 프로세스 풀
 hash_process_pool = None
+_hash_worker_count = 0  # 0이면 CPU 코어 기반 자동
 
 
-# ============================================================
-# 해시 계산
-# ============================================================
+def set_hash_worker_count(count):
+    """해시 계산 프로세스 갯수 설정 (0이면 CPU 코어 기반 자동)"""
+    global _hash_worker_count
+    _hash_worker_count = max(0, int(count))
+
+
 def get_hash_process_pool():
     """해시 계산 프로세스 풀 생성/반환"""
     global hash_process_pool
     if hash_process_pool is None:
-        max_workers = min(32, max(1, (os.cpu_count() or 4)))
+        if _hash_worker_count > 0:
+            max_workers = min(32, _hash_worker_count)
+        else:
+            max_workers = min(32, max(1, (os.cpu_count() or 4)))
         hash_process_pool = ProcessPoolExecutor(max_workers=max_workers)
     return hash_process_pool
 

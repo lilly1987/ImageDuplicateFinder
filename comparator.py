@@ -31,6 +31,22 @@ _hash_int_lock = __import__("threading").Lock()
 _compare_cache_loaded = False
 _compare_cache_loaded_lock = __import__("threading").Lock()
 
+# 비교 스레드 갯수 (0이면 CPU 코어 기반 자동)
+_compare_worker_count = 0
+
+
+def set_compare_worker_count(count):
+    """비교 스레드 갯수 설정 (0이면 CPU 코어 기반 자동)"""
+    global _compare_worker_count
+    _compare_worker_count = max(0, int(count))
+
+
+def _resolve_compare_workers():
+    """비교 스레드 갯수 결정"""
+    if _compare_worker_count > 0:
+        return min(32, _compare_worker_count)
+    return min(32, max(1, (os.cpu_count() or 4) + 4))
+
 
 # ============================================================
 # 비교 캐시 관리
@@ -566,7 +582,7 @@ def _run_cross_folder_compare(folder_files, new_compare_files_set, hashes, candi
 
     last_log_time = time.perf_counter()
     last_log_count = 0
-    max_workers = min(32, max(1, (os.cpu_count() or 4) + 4))
+    max_workers = _resolve_compare_workers()
     executor = ThreadPoolExecutor(max_workers=max_workers)
     futures = set()
 
@@ -659,7 +675,7 @@ def _run_all_folder_compare(all_files, new_compare_files_set, hashes, candidates
     total_pairs = max(0, len([p for p in all_files if p in new_compare_files_set]) * (len(all_files) - 1))
     last_log_time = time.perf_counter()
     last_log_count = 0
-    max_workers = min(32, max(1, (os.cpu_count() or 4) + 4))
+    max_workers = _resolve_compare_workers()
     executor = ThreadPoolExecutor(max_workers=max_workers)
     futures = set()
 
