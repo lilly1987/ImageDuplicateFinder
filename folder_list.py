@@ -69,6 +69,8 @@ def create_folder_list(root):
     container._select_all_btn = select_all_btn
     container._deselect_all_btn = deselect_all_btn
     container._invert_btn = invert_btn
+    # 필터로 숨겨진(detach된) 항목 ID 추적 (필터 해제 시 복원용)
+    container._detached = set()
 
     return container
 
@@ -100,17 +102,39 @@ def _invert_all_checked(container):
 
 
 def _apply_filter(container):
-    """필터 입력에 따라 목록 표시/숨김 (detach/reattach)"""
+    """
+    필터 입력에 따라 목록 표시/숨김.
+    - detach된 항목은 container._detached에 보관하여 필터 해제 시 복원.
+    - 필터는 검색 목적이므로 항목을 영구 제거하지 않음.
+    """
     tree = container._tree
     keyword = container._filter_var.get().strip().lower()
+
+    # 1. 현재 표시 중인 항목 중 필터에 맞지 않는 것 숨기기
     for item_id in tree.get_children():
         path = tree.set(item_id, "path").lower()
         if keyword and keyword not in path:
             tree.detach(item_id)
-        else:
-            # 이미 표시된 항목은 건너뜀
-            if not tree.exists(item_id):
+            container._detached.add(item_id)
+
+    # 2. 필터가 비어있으면 숨겨진 항목 모두 복원
+    if not keyword:
+        for item_id in list(container._detached):
+            try:
                 tree.reattach(item_id, "", 0)
+            except Exception:
+                pass
+        container._detached.clear()
+    else:
+        # 3. 필터가 있으면 숨겨진 항목 중 필터에 맞는 것 복원
+        for item_id in list(container._detached):
+            try:
+                path = tree.set(item_id, "path").lower()
+                if keyword in path:
+                    tree.reattach(item_id, "", 0)
+                    container._detached.discard(item_id)
+            except Exception:
+                pass
 
 
 def create_count_label(root, lang):
@@ -195,9 +219,11 @@ def update_count(folder_list, lang, count_label=None):
 
 
 def get_checked_folders(folder_list):
-    """검사 대상(체크된) 폴더 경로 목록 반환"""
+    """검사 대상(체크된) 폴더 경로 목록 반환 (detach된 항목 포함)"""
     tree = folder_list._tree
-    return [tree.set(iid, "path") for iid in tree.get_children() if tree.set(iid, "checked") == "☑"]
+    # 표시 중인 항목 + 필터로 숨겨진(detach된) 항목 모두 포함
+    all_ids = list(tree.get_children()) + list(folder_list._detached)
+    return [tree.set(iid, "path") for iid in all_ids if tree.set(iid, "checked") == "☑"]
 
 
 def get_all_folders(folder_list):
@@ -223,7 +249,9 @@ def get_filtered_checked_folders(folder_list):
 def save_folder_list(folder_list):
     tree = folder_list._tree
     entries = []
-    for iid in tree.get_children():
+    # 표시 중인 항목 + 필터로 숨겨진(detach된) 항목 모두 저장
+    all_ids = list(tree.get_children()) + list(folder_list._detached)
+    for iid in all_ids:
         checked = tree.set(iid, "checked") == "☑"
         path = tree.set(iid, "path")
         entries.append({"checked": checked, "path": path})
