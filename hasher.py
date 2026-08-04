@@ -27,13 +27,15 @@ def set_hash_worker_count(count):
 
 
 def get_hash_process_pool():
-    """해시 계산 프로세스 풀 생성/반환"""
+    """해시 계산 프로세스 풀 생성/반환 (UI 반응성을 위해 1코어 남김)"""
     global hash_process_pool
     if hash_process_pool is None:
         if _hash_worker_count > 0:
             max_workers = min(32, _hash_worker_count)
         else:
-            max_workers = min(32, max(1, (os.cpu_count() or 4)))
+            cpu = os.cpu_count() or 4
+            # UI 스레드 반응성을 위해 최소 1코어 남김
+            max_workers = min(32, max(1, cpu - 1))
         hash_process_pool = ProcessPoolExecutor(max_workers=max_workers)
     return hash_process_pool
 

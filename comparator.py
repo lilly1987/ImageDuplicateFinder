@@ -42,10 +42,12 @@ def set_compare_worker_count(count):
 
 
 def _resolve_compare_workers():
-    """비교 스레드 갯수 결정"""
+    """비교 스레드 갯수 결정 (UI 반응성을 위해 1~2코어 남김)"""
     if _compare_worker_count > 0:
         return min(32, _compare_worker_count)
-    return min(32, max(1, (os.cpu_count() or 4) + 4))
+    cpu = os.cpu_count() or 4
+    # CPU 코어수에서 2개를 남겨서 UI 스레드가 반응할 수 있도록 함
+    return max(1, min(32, cpu - 2))
 
 
 # ============================================================

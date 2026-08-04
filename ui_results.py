@@ -422,30 +422,41 @@ def show_duplicate_results_window(root, lang):
     win.bind("<Shift-Delete>", on_shift_delete_key)
 
     # ============================================================
-    # 실시간 중복 그룹 갱신 (진행 중 비교 결과 표시)
+    # 실시간 중복 그룹 갱신 (백그라운드 스레드 + UI 스레드 분리)
     # ============================================================
     live_refresh_enabled = {"value": True}
     live_refresh_after_id = {"id": None}
+    last_group_count = {"value": 0}  # 마지막으로 확인한 그룹 수
 
     def refresh_live_groups():
-        """진행 중인 비교의 중복 그룹을 실시간으로 트리에 반영"""
+        """진행 중인 비교의 중복 그룹을 실시간으로 트리에 반영 (백그라운드)"""
         if not live_refresh_enabled["value"]:
             return
-        try:
-            # 진행 중이면 메모리 그룹을 실시간 표시
-            if not is_stop_requested():
-                groups = get_duplicate_groups()
-                if groups:
-                    # 기존 트리 항목 수와 비교하여 변경 시에만 갱신
-                    current_count = len(tree.get_children())
-                    if current_count != len(groups):
-                        # 실시간 모드: saved_groups를 동기화하며 트리 갱신
-                        is_live_mode["value"] = True
-                        _populate_tree(groups, live_label=True)
-        except Exception:
-            pass
-        # 다음 폴링 예약 (1초 간격)
-        live_refresh_after_id["id"] = win.after(1000, refresh_live_groups)
+
+        # 백그라운드 스레드에서 get_duplicate_groups() 실행 (UI 블로킹 방지)
+        def fetch_groups():
+            if not live_refresh_enabled["value"]:
+                return
+            try:
+                if not is_stop_requested():
+                    groups = get_duplicate_groups()
+                    if groups and len(groups) != last_group_count["value"]:
+                        # UI 스레드에서 트리 갱신
+                        def update_ui():
+                            try:
+                                is_live_mode["value"] = True
+                                _populate_tree(groups, live_label=True)
+                                last_group_count["value"] = len(groups)
+                            except Exception:
+                                pass
+                        win.after(0, update_ui)
+            except Exception:
+                pass
+
+        threading.Thread(target=fetch_groups, daemon=True).start()
+
+        # 다음 폴링 예약 (2초 간격 - UI 부하 감소)
+        live_refresh_after_id["id"] = win.after(2000, refresh_live_groups)
 
     def stop_live_refresh():
         """실시간 갱신 중지"""
