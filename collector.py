@@ -391,161 +391,273 @@ def _scan_and_hash_pipeline(folders, include_sub, search_mode, method, hash_size
 
 
 # ============================================================
+# 해시-비교 동시 파이프라인 (Queue 기반)
+# ============================================================
+def _run_hash_compare_pipeline(search_mode, folders, include_sub, options, method, hash_size, tolerance, duplicate_limit, max_compare_files, max_hash_compute_files, use_compare_cache, start_time, compare_progress_log_interval=0):
+    """
+    해시 계산과 비교를 동시에 실행하는 진정한 파이프라인.
+    
+    구조:
+    [스캔+해시 스레드] → hash_queue → [비교 스레드 풀]
+                                         ↓
+                                    [중복 그룹 메모리]
+    
+    - 해시가 계산되는 즉시 비교 스레드로 전달
+    - BK-Tree에 증분 추가하며 실시간 비교
+    - 중단 시 양쪽 스레드 모두 안전하게 종료
+    """
+    import queue as queue_mod
+    import threading as threading_mod
+    from hasher import precompute_hashes, _query_cached_hashes
+    from comparator import (
+        record_duplicate_pair, compare_file_with_list,
+        update_processed_compare_files, _resolve_compare_workers,
+        already_compared, add_compare_record, _hash_str_to_int,
+    )
+    from bk_match import BKTree, _hash_to_int
+    from state import is_stop_requested, request_stop, duplicate_pairs, duplicates_lock
+    from logger import logger
+
+    scan_batch = options.get("scan_batch_size", 1000)
+    use_bktree = options.get("use_bktree", True)
+    
+    # 1. 파일 수집 (스캔만 먼저 수행 - 빠름)
+    folder_files, all_target_files = _collect_files_for_mode(folders, include_sub, search_mode)
+    logger.info(f"total={len(all_target_files)}")
+    
+    # max_compare_files 적용
+    folder_files, all_target_files = _apply_max_compare_files(search_mode, folder_files, all_target_files, max_compare_files, method, hash_size)
+    compare_file_paths = list(all_target_files)
+    
+    # 증분 대상 준비
+    new_compare_files_set, baseline_compare_files, new_compare_files = _prepare_incremental_targets(compare_file_paths, method, hash_size)
+    if baseline_compare_files:
+        logger.info(f"[bold cyan][알림] 증분 비교 모드: 기준 파일 {len(baseline_compare_files)}개, 신규 파일 {len(new_compare_files)}개[/bold cyan]")
+    elif new_compare_files:
+        logger.info(f"[bold cyan][알림] 신규 파일 {len(new_compare_files)}개를 기준으로 비교를 시작합니다.[/bold cyan]")
+    else:
+        logger.info("[bold cyan][알림] 새로 추가된 비교 대상이 없어 비교를 건너뜁니다.[/bold cyan]")
+        return 0, 0, 0, compare_file_paths
+
+    if is_stop_requested():
+        logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
+        return 0, 0, 0, compare_file_paths
+
+    # 2. 해시-비교 큐 설정
+    # 해시 스레드가 배치를 넣고, 비교 스레드가 가져감
+    hash_batch_queue = queue_mod.Queue(maxsize=20)  # 최대 20배치 대기
+    all_hashes = {}  # 전체 해시 결과 (스레드 안전하게 접근)
+    all_hashes_lock = threading_mod.Lock()
+    
+    # BK-Tree (비교 스레드에서 증분 추가)
+    bktree = BKTree() if use_bktree else None
+    bktree_lock = threading_mod.Lock()
+    
+    # 통계
+    stats = {"total_compared": 0, "total_duplicates": 0, "total_hashed": 0}
+    stats_lock = threading_mod.Lock()
+    
+    # 3. 해시 프로듀서 스레드
+    def hash_producer():
+        """파일을 배치 단위로 해시 계산하여 큐에 전달"""
+        try:
+            # 전체 파일을 배치로 나누어 해시 계산
+            full_file_paths = list(all_target_files)
+            chunk_size = max(1, int(scan_batch))
+            
+            for start in range(0, len(full_file_paths), chunk_size):
+                if is_stop_requested():
+                    break
+                
+                batch_paths = full_file_paths[start:start + chunk_size]
+                batch_hashes = precompute_hashes(
+                    batch_paths,
+                    method,
+                    hash_size,
+                    batch_size=scan_batch,
+                    max_new_hashes=max_hash_compute_files,
+                )
+                
+                # 전체 해시에 추가
+                with all_hashes_lock:
+                    all_hashes.update(batch_hashes)
+                    with stats_lock:
+                        stats["total_hashed"] += len(batch_hashes)
+                
+                # 비교 스레드로 전달 (큐가 가득 차면 대기)
+                hash_batch_queue.put({
+                    "paths": batch_paths,
+                    "hashes": batch_hashes,
+                    "batch_index": start // chunk_size,
+                })
+                
+                logger.info(f"[bold cyan][해시 파이프라인][/bold cyan] batch {start // chunk_size + 1} 완료: {len(batch_paths)}개 해시 → 비교 큐 전달")
+        except Exception as e:
+            logger.error(f"[해시 프로듀서 오류] {e}")
+        finally:
+            # 종료 신호
+            hash_batch_queue.put(None)
+    
+    # 4. 비교 컨슈머 스레드
+    def compare_consumer():
+        """해시 배치를 가져와 BK-Tree에 추가하고 실시간 비교"""
+        try:
+            while True:
+                if is_stop_requested():
+                    break
+                
+                batch_data = hash_batch_queue.get(timeout=60)
+                if batch_data is None:
+                    break  # 해시 스레드 종료 신호
+                
+                batch_paths = batch_data["paths"]
+                batch_hashes = batch_data["hashes"]
+                batch_index = batch_data["batch_index"]
+                
+                # 이 배치의 파일들을 BK-Tree에 추가하고 기존 파일과 비교
+                for path in batch_paths:
+                    if is_stop_requested():
+                        break
+                    
+                    h = batch_hashes.get(path)
+                    if h is None:
+                        continue
+                    
+                    # 진행 상태 기록
+                    update_processed_compare_files(method, hash_size, [path])
+                    
+                    # BK-Tree에 추가하고 후보 찾기
+                    if bktree is not None:
+                        h_int = _hash_to_int(h)
+                        if h_int is not None:
+                            with bktree_lock:
+                                # tolerance 이내의 모든 파일 찾기
+                                matches = bktree.query(h_int, tolerance)
+                                # 새 파일을 트리에 추가
+                                bktree.insert(h_int, path)
+                            
+                            # 후보와 비교
+                            for matched_path, dist in matches:
+                                if is_stop_requested():
+                                    break
+                                if matched_path == path:
+                                    continue
+                                
+                                # 비교 캐시 확인
+                                if use_compare_cache:
+                                    cached = already_compared(path, matched_path, method, hash_size)
+                                    if cached is not None:
+                                        with stats_lock:
+                                            stats["total_compared"] += 1
+                                            if cached:
+                                                stats["total_duplicates"] += 1
+                                                try:
+                                                    record_duplicate_pair(path, matched_path)
+                                                except Exception:
+                                                    pass
+                                        continue
+                                
+                                # 실제 해밍 거리 계산
+                                h2 = all_hashes.get(matched_path)
+                                if h2 is None:
+                                    continue
+                                
+                                h1_int = _hash_str_to_int(h)
+                                h2_int = _hash_str_to_int(h2)
+                                if h1_int is None or h2_int is None:
+                                    continue
+                                
+                                diff = h1_int ^ h2_int
+                                hamming_distance = diff.bit_count()
+                                is_dup = hamming_distance <= tolerance
+                                
+                                with stats_lock:
+                                    stats["total_compared"] += 1
+                                    if is_dup:
+                                        stats["total_duplicates"] += 1
+                                        try:
+                                            record_duplicate_pair(path, matched_path)
+                                        except Exception:
+                                            pass
+                                        # 중복 제한 확인
+                                        if duplicate_limit > 0 and stats["total_duplicates"] >= duplicate_limit:
+                                            logger.warning(f"[bold yellow][중단][/bold yellow] 중복 {stats['total_duplicates']:,}건 도달로 비교를 중단합니다.")
+                                            request_stop()
+                                            break
+                                
+                                # 비교 결과 저장
+                                if use_compare_cache:
+                                    add_compare_record(path, matched_path, method, hash_size, is_dup)
+                    else:
+                        # BK-Tree 미사용: 기존 방식 (모든 파일과 비교)
+                        with all_hashes_lock:
+                            existing_paths = [p for p in all_hashes.keys() if p != path and all_hashes[p] is not None]
+                        
+                        if existing_paths:
+                            total, dups = compare_file_with_list(
+                                path, existing_paths, method, hash_size, tolerance,
+                                use_compare_cache=use_compare_cache,
+                                duplicate_limit=duplicate_limit,
+                                hashes=all_hashes,
+                            )
+                            with stats_lock:
+                                stats["total_compared"] += total
+                                stats["total_duplicates"] += dups
+                
+                logger.info(f"[bold cyan][비교 파이프라인][/bold cyan] batch {batch_index + 1} 비교 완료 (누적 비교: {stats['total_compared']:,}회, 중복: {stats['total_duplicates']:,}건)")
+        except Exception as e:
+            logger.error(f"[비교 컨슈머 오류] {e}")
+    
+    # 5. 파이프라인 실행
+    logger.info(f"[bold cyan][파이프라인 시작][/bold cyan] 해시 스레드 + 비교 스레드 동시 실행")
+    
+    hash_thread = threading_mod.Thread(target=hash_producer, daemon=True)
+    compare_thread = threading_mod.Thread(target=compare_consumer, daemon=True)
+    
+    hash_thread.start()
+    compare_thread.start()
+    
+    # 양쪽 스레드 완료 대기
+    hash_thread.join()
+    compare_thread.join()
+    
+    # 6. 결과 정리
+    total_compared = stats["total_compared"]
+    total_duplicates = stats["total_duplicates"]
+    total_hashed = stats["total_hashed"]
+    
+    valid = sum(1 for v in all_hashes.values() if v)
+    none_count = sum(1 for v in all_hashes.values() if v is None)
+    logger.info(f"[bold green][파이프라인 완료][/bold green] 해시: {total_hashed}개 (유효: {valid}, 무효: {none_count}), 비교: {total_compared:,}회, 중복: {total_duplicates:,}건")
+    
+    # total_pairs 추정 (로그용)
+    n = len(all_target_files)
+    total_pairs = max(0, len(new_compare_files) * (n - 1))
+    
+    return total_compared, total_duplicates, total_pairs, compare_file_paths
+
+
+# ============================================================
 # 비교 실행 분기 (메인 로직)
 # ============================================================
 def _run_compare_branch(search_mode, folders, include_sub, options, method, hash_size, tolerance, duplicate_limit, max_compare_files, max_hash_compute_files, use_compare_cache, start_time, aspect_ratio_tol, tolerance_rate, compare_progress_log_interval=0):
-    """비교 실행 분기"""
-    from comparator import _run_cross_folder_compare, _run_all_folder_compare
-
-    total_compared = 0
-    total_duplicates = 0
-    total_pairs = 0
-    compare_file_paths = []
-
-    if search_mode == "cross_folder":
-        logger.info("[bold cyan]cross_folder 모드[/bold cyan]")
-        # 스캔-해시 파이프라인: 스캔하면서 배치 단위로 해시 계산
-        scan_batch = options.get("scan_batch_size", 1000)
-        folder_files, all_target_files, hashes = _scan_and_hash_pipeline(
-            folders, include_sub, search_mode, method, hash_size,
-            batch_size=scan_batch,
-            max_new_hashes=max_hash_compute_files,
-        )
-        logger.info(f"total={len(all_target_files)}")
-        folder_files, all_target_files = _apply_max_compare_files(search_mode, folder_files, all_target_files, max_compare_files, method, hash_size)
-        compare_file_paths = list(all_target_files)
-        new_compare_files_set, baseline_compare_files, new_compare_files = _prepare_incremental_targets(compare_file_paths, method, hash_size)
-        if baseline_compare_files:
-            logger.info(f"[bold cyan][알림] 증분 비교 모드: 기준 파일 {len(baseline_compare_files)}개, 신규 파일 {len(new_compare_files)}개[/bold cyan]")
-        elif new_compare_files:
-            logger.info(f"[bold cyan][알림] 신규 파일 {len(new_compare_files)}개를 기준으로 비교를 시작합니다.[/bold cyan]")
-        else:
-            logger.info("[bold cyan][알림] 새로 추가된 비교 대상이 없어 비교를 건너뜁니다.[/bold cyan]")
-            return 0, total_duplicates, 0, compare_file_paths
-
-        if is_stop_requested():
-            logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
-            return 0, total_duplicates, 0, compare_file_paths
-
-        # max_compare_files 적용 후 hashes 필터링
-        if max_compare_files > 0:
-            target_set = set(all_target_files)
-            hashes = {p: h for p, h in hashes.items() if p in target_set}
-
-        valid = sum(1 for v in hashes.values() if v)
-        none_count = sum(1 for v in hashes.values() if v is None)
-        missing_count = len(all_target_files) - len(hashes)
-        logger.info(f"Hashes precomputed: entries={len(hashes)}, valid={valid}, none={none_count}, missing={missing_count}")
-
-        # BK-Tree 기반 후보 선별 (대용량에 적합)
-        use_bktree = options.get("use_bktree", True)
-        if use_bktree and len(all_target_files) > 1000:
-            logger.info(f"Building BK-Tree for {len(all_target_files)} files (tolerance={tolerance})...")
-            candidates = collect_candidate_pairs_bktree(all_target_files, hashes, tolerance)
-            candidate_count = sum(len(v) for v in candidates.values())
-            logger.info(f"BK-Tree candidates: {candidate_count:,} pairs")
-        else:
-            prefix_bits = get_hash_prefix_bits(hash_size)
-            bucket_index = build_hash_buckets(all_target_files, hashes, prefix_bits)
-            bucket_count = len(bucket_index)
-            max_bucket = max((len(v) for v in bucket_index.values()), default=0)
-            logger.info(f"Built {bucket_count} buckets (prefix_bits={prefix_bits}), max_bucket_size={max_bucket}")
-            candidates = collect_candidate_pairs(all_target_files, bucket_index)
-
-        if is_stop_requested():
-            logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
-            return 0, total_duplicates, 0, compare_file_paths
-
-        estimated_total_pairs = _estimate_compare_total_pairs(search_mode, folder_files, all_target_files, new_compare_files_set)
-        log_interval = _calculate_log_interval(estimated_total_pairs, compare_progress_log_interval)
-        logger.info(f"Progress log interval: {log_interval} pairs (estimated_total_pairs={estimated_total_pairs:,})")
-        total_compared, total_duplicates, total_pairs = _run_cross_folder_compare(
-            folder_files,
-            new_compare_files_set,
-            hashes,
-            candidates,
-            method,
-            hash_size,
-            tolerance,
-            duplicate_limit,
-            use_compare_cache,
-            start_time,
-            log_interval,
-            estimated_total_pairs < 50,
-        )
-    else:
-        logger.info("[bold cyan][all_folders 모드][/bold cyan]")
-        # 스캔-해시 파이프라인: 스캔하면서 배치 단위로 해시 계산
-        scan_batch = options.get("scan_batch_size", 1000)
-        _, all_collected_files, hashes = _scan_and_hash_pipeline(
-            folders, include_sub, search_mode, method, hash_size,
-            batch_size=scan_batch,
-            max_new_hashes=max_hash_compute_files,
-        )
-        _, all_files = _apply_max_compare_files(search_mode, None, all_collected_files, max_compare_files, method, hash_size)
-        compare_file_paths = list(all_files)
-        new_compare_files_set, baseline_compare_files, new_compare_files = _prepare_incremental_targets(compare_file_paths, method, hash_size)
-        if baseline_compare_files:
-            logger.info(f"[bold cyan][알림] 증분 비교 모드: 기준 파일 {len(baseline_compare_files)}개, 신규 파일 {len(new_compare_files)}개[/bold cyan]")
-        elif new_compare_files:
-            logger.info(f"[bold cyan][알림] 신규 파일 {len(new_compare_files)}개를 기준으로 비교를 시작합니다.[/bold cyan]")
-        else:
-            logger.info("[bold cyan][알림] 새로 추가된 비교 대상이 없어 비교를 건너뜁니다.[/bold cyan]")
-            return 0, total_duplicates, 0, compare_file_paths
-
-        if is_stop_requested():
-            logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
-            return 0, total_duplicates, 0, compare_file_paths
-
-        # max_compare_files 적용 후 hashes 필터링
-        if max_compare_files > 0:
-            target_set = set(all_files)
-            hashes = {p: h for p, h in hashes.items() if p in target_set}
-
-        valid = sum(1 for v in hashes.values() if v)
-        none_count = sum(1 for v in hashes.values() if v is None)
-        missing_count = len(all_files) - len(hashes)
-        logger.info(f"Hashes precomputed: entries={len(hashes)}, valid={valid}, none={none_count}, missing={missing_count}")
-
-        # BK-Tree 기반 후보 선별 (대용량에 적합)
-        use_bktree = options.get("use_bktree", True)
-        if use_bktree and len(all_files) > 1000:
-            logger.info(f"Building BK-Tree for {len(all_files)} files (tolerance={tolerance})...")
-            candidates = collect_candidate_pairs_bktree(all_files, hashes, tolerance)
-            candidate_count = sum(len(v) for v in candidates.values())
-            logger.info(f"BK-Tree candidates: {candidate_count:,} pairs")
-        else:
-            prefix_bits = get_hash_prefix_bits(hash_size)
-            bucket_index = build_hash_buckets(all_files, hashes, prefix_bits)
-            bucket_count = len(bucket_index)
-            max_bucket = max((len(v) for v in bucket_index.values()), default=0)
-            logger.info(f"Built {bucket_count} buckets (prefix_bits={prefix_bits}), max_bucket_size={max_bucket}")
-            candidates = collect_candidate_pairs(all_files, bucket_index)
-
-        if is_stop_requested():
-            logger.warning("[bold yellow][비교 중단됨][/bold yellow]")
-            return 0, total_duplicates, 0, compare_file_paths
-
-        n = len(all_files)
-        pending_files = [p for p in all_files if p in new_compare_files_set]
-        total_pairs = max(0, len(pending_files) * (n - 1))
-        logger.info(f"Starting all_folders compare: total_pairs={total_pairs}, files={n}, pending_files={len(pending_files)}")
-        log_interval = _calculate_log_interval(total_pairs, compare_progress_log_interval)
-        logger.info(f"Progress log interval: {log_interval} pairs (estimated_total_pairs={total_pairs:,})")
-        verbose_single = total_pairs < 50
-        total_compared, total_duplicates, total_pairs = _run_all_folder_compare(
-            all_files,
-            new_compare_files_set,
-            hashes,
-            candidates,
-            method,
-            hash_size,
-            tolerance,
-            duplicate_limit,
-            use_compare_cache,
-            start_time,
-            log_interval,
-            verbose_single,
-        )
+    """비교 실행 분기 - 해시-비교 동시 파이프라인 사용"""
+    logger.info(f"[bold cyan]{search_mode} 모드[/bold cyan]")
+    
+    total_compared, total_duplicates, total_pairs, compare_file_paths = _run_hash_compare_pipeline(
+        search_mode,
+        folders,
+        include_sub,
+        options,
+        method,
+        hash_size,
+        tolerance,
+        duplicate_limit,
+        max_compare_files,
+        max_hash_compute_files,
+        use_compare_cache,
+        start_time,
+        compare_progress_log_interval,
+    )
 
     return total_compared, total_duplicates, total_pairs, compare_file_paths
