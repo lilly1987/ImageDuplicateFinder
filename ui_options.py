@@ -62,25 +62,46 @@ def show_options(root, lang):
         tk.Radiobutton(scrollable_frame, text=text, variable=method_var, value=val).pack(anchor="w")
     tk.Label(scrollable_frame, text="이미지 해시 알고리즘을 선택합니다. 알고리즘마다 유사성 판단 기준이 다릅니다.", fg="gray", wraplength=550, justify="left").pack(anchor="w", fill="x")
 
-    # --- 해시 크기 (2의 제곱수만 허용 - 드롭다운) ---
+    # --- 해시 크기 (알고리즘별 지원 크기 - 드롭다운) ---
     tk.Label(scrollable_frame, text=lang["ui"].get("hash_size", "해시 크기 (값이 클수록 정밀하지만 느려짐)"), font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 2))
-    size_var = tk.IntVar(value=config.get("hash_size", 8))
-    # imagehash는 hash_size=2의 제곱수만 지원하므로 드롭다운으로 제한
-    hash_size_options = [8, 16, 32, 64, 128, 256]
-    # config 값이 목록에 없으면 가장 가까운 상위 값으로 보정
+    # 알고리즘별 지원 해시 크기
+    hash_size_by_method = {
+        "ahash": [8, 16, 32, 64, 128, 256],
+        "phash": [8, 16, 32, 64],
+        "dhash": [8, 16, 32, 64, 128, 256],
+        "whash": [8, 16, 32, 64],
+        "bhash": [8, 16, 32, 64, 128, 256],
+    }
+    config_method = config.get("compare_method", "ahash")
     config_hash_size = config.get("hash_size", 8)
-    if config_hash_size not in hash_size_options:
-        config_hash_size = next((s for s in hash_size_options if s >= config_hash_size), 64)
+    # config 값이 현재 알고리즘의 목록에 없으면 가장 가까운 상위 값으로 보정
+    current_options = hash_size_by_method.get(config_method, [8, 16, 32, 64, 128, 256])
+    if config_hash_size not in current_options:
+        config_hash_size = next((s for s in current_options if s >= config_hash_size), current_options[-1])
     size_var = tk.IntVar(value=config_hash_size)
     size_combo = ttk.Combobox(
         scrollable_frame,
         textvariable=size_var,
-        values=hash_size_options,
+        values=current_options,
         state="readonly",
         width=10,
     )
     size_combo.pack(anchor="w")
-    tk.Label(scrollable_frame, text="해시 크기는 2의 제곱수(8, 16, 32, 64, 128, 256)만 지원합니다. 클수록 더 정밀하지만 계산 시간과 저장 공간이 늘어납니다. (bHash는 256까지 지원)", fg="gray", wraplength=550, justify="left").pack(anchor="w", fill="x")
+    tk.Label(scrollable_frame, text="알고리즘별로 지원하는 해시 크기가 다릅니다. 클수록 더 정밀하지만 계산 시간과 저장 공간이 늘어납니다.", fg="gray", wraplength=550, justify="left").pack(anchor="w", fill="x")
+
+    # 알고리즘 변경 시 해시 크기 목록 동기화
+    def update_hash_size_options(*args):
+        method = method_var.get()
+        options = hash_size_by_method.get(method, [8, 16, 32, 64, 128, 256])
+        size_combo["values"] = options
+        # 현재 값이 새 목록에 없으면 보정
+        current = size_var.get()
+        if current not in options:
+            size_var.set(next((s for s in options if s >= current), options[-1]))
+
+    method_var.trace("w", update_hash_size_options)
+    # 초기 적용
+    update_hash_size_options()
 
     # --- 해상도 비율 허용 오차 ---
     tk.Label(scrollable_frame, text=lang["ui"].get("ratio_tolerance", "해상도 비율 허용 오차 (예: 0.02)"), font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 2))
