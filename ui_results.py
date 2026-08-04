@@ -42,16 +42,55 @@ def show_duplicate_results_window(root, lang):
     search_combo.pack(side="left", padx=(0, 10))
 
     def refresh_search_list():
-        """DB 테이블과 JSON 파일에서 사용 가능한 검색 결과 목록 조회"""
-        from database import db_lock, _get_all_table_names
-        import sqlite3
-        from compare import DB_FILE
+        """DB 테이블 + JSON 파일 + 진행 중(Live) 검색 결과 목록 조회"""
         import glob
+        from results import _load_groups_from_json
         options = []
         seen = set()
 
-        # 1. DB 테이블에서 (method, hash_size) 추출
+        # 0. 진행 중이면 "실시간 (진행 중)" 항목 최상단 추가
+        if not is_stop_requested():
+            try:
+                live_groups = get_duplicate_groups()
+                if live_groups and len(live_groups) > 0:
+                    options.append(("실시간 (진행 중)", "live", 0, None, None))
+            except Exception:
+                pass
+
+        # 1. JSON 파일에서 추출 (예: duplicate_results_ahash_h16_ratio0p01_tol0p0039.json)
+        for json_path in glob.glob("duplicate_results_*.json"):
+            try:
+                basename = os.path.splitext(os.path.basename(json_path))[0]
+                parts = basename.split("_")
+                # parts: ["duplicate", "results", method, "h{hash_size}", "ratio{ratio}", "tol{tolerance}"]
+                if len(parts) >= 6 and parts[0] == "duplicate" and parts[1] == "results":
+                    method = parts[2]
+                    hash_size_str = parts[3]
+                    ratio_str = parts[4]
+                    tol_str = parts[5]
+                    if hash_size_str.startswith("h") and ratio_str.startswith("ratio") and tol_str.startswith("tol"):
+                        hash_size = int(hash_size_str[1:])
+                        aspect_ratio_tol = float(ratio_str[5:].replace("p", "."))
+                        tolerance_rate = float(tol_str[3:].replace("p", "."))
+                        key = (method, hash_size, aspect_ratio_tol, tolerance_rate)
+                        if key not in seen:
+                            seen.add(key)
+                            # 실제 JSON 파일에서 그룹 로드하여 건수 확인
+                            groups = _load_groups_from_json(json_path, method, hash_size, aspect_ratio_tol, tolerance_rate)
+                            if groups and len(groups) > 0:
+                                options.append(
+                                    (f"{method} / hash_size={hash_size} / tol={tolerance_rate} ({len(groups)} groups)",
+                                     "json", hash_size, aspect_ratio_tol, tolerance_rate)
+                                )
+            except Exception:
+                pass
+
+        # 2. DB 테이블에서 (method, hash_size) 추출 (JSON에 없는 것만)
         try:
+            from ui_cache import _get_all_table_names
+            from database import db_lock
+            import sqlite3
+            from compare import DB_FILE
             with db_lock:
                 conn = sqlite3.connect(DB_FILE, timeout=30)
                 cur = conn.cursor()
@@ -63,53 +102,52 @@ def show_duplicate_results_window(root, lang):
                         try:
                             hash_size = int(parts[3])
                             key = (method, hash_size)
-                            if key not in seen:
-                                seen.add(key)
-                                options.append((f"{method} / hash_size={hash_size}", method, hash_size))
+                            if key not in {(m, h) for (m, h, *_ ) in seen}:
+                                from comparator import load_duplicate_results_from_db
+                                groups = load_duplicate_results_from_db(method, hash_size)
+                                if groups and len(groups) > 0:
+                                    options.append((f"{method} / hash_size={hash_size} ({len(groups)} groups)",
+                                                    "db", hash_size, None, None))
                         except ValueError:
                             pass
                 conn.close()
         except Exception:
             pass
 
-        # 2. JSON 파일에서도 추출 (예: duplicate_results_ahash_h16_ratio0p01_tol0p0039.json)
-        for json_path in glob.glob("duplicate_results_*.json"):
-            try:
-                # 파일명 파싱: duplicate_results_{method}_h{hash_size}_ratio{ratio}_tol{tolerance}.json
-                basename = os.path.splitext(os.path.basename(json_path))[0]
-                parts = basename.split("_")
-                # parts[0] = "duplicate", parts[1] = "results", parts[2] = method, parts[3] = "h{hash_size}", ...
-                if len(parts) >= 4 and parts[0] == "duplicate" and parts[1] == "results":
-                    method = parts[2]
-                    hash_size_str = parts[3]
-                    if hash_size_str.startswith("h"):
-                        hash_size = int(hash_size_str[1:])
-                        key = (method, hash_size)
-                        if key not in seen:
-                            seen.add(key)
-                            options.append((f"{method} / hash_size={hash_size}", method, hash_size))
-            except Exception:
-                pass
-
-        # 3. 건수가 있는 것만 필터링
-        valid_options = []
-        for label, method, hash_size in options:
-            try:
-                from comparator import load_duplicate_results_from_db
-                groups = load_duplicate_results_from_db(method, hash_size)
-                if groups and len(groups) > 0:
-                    valid_options.append((f"{label} ({len(groups)} groups)", method, hash_size))
-            except Exception:
-                pass
-        search_combo["values"] = [opt[0] for opt in valid_options]
-        search_combo._valid_options = valid_options
-        return valid_options
+        search_combo["values"] = [opt[0] for opt in options]
+        search_combo._valid_options = options
+        return options
 
     def on_search_selected(event=None):
         """드롭다운 선택 시 해당 결과 로드"""
         selected = search_combo.current()
-        if selected >= 0 and hasattr(search_combo, '_valid_options'):
-            _, method, hash_size = search_combo._valid_options[selected]
+        if selected < 0 or not hasattr(search_combo, '_valid_options'):
+            return
+        item = search_combo._valid_options[selected]
+        source_type, hash_size, aspect_ratio_tol, tolerance_rate = item[1], item[2], item[3], item[4]
+
+        # 실시간(진행 중) 선택
+        if source_type == "live":
+            groups = get_duplicate_groups()
+            if groups:
+                _populate_tree(groups, live_label=True)
+                is_live_mode["value"] = True
+            return
+
+        # JSON 파일 선택
+        if source_type == "json":
+            method = item[0].split(" / ")[0]
+            from results import _load_groups_from_json, duplicate_results_json_path
+            json_path = duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance_rate)
+            groups = _load_groups_from_json(json_path, method, hash_size, aspect_ratio_tol, tolerance_rate)
+            if groups:
+                _populate_tree(groups, live_label=False)
+                is_live_mode["value"] = False
+            return
+
+        # DB 테이블 선택
+        if source_type == "db":
+            method = item[0].split(" / ")[0]
             from comparator import load_duplicate_results_from_db
             groups = load_duplicate_results_from_db(method, hash_size)
             if groups:
