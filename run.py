@@ -13,7 +13,8 @@ from ui_cache import get_cache_counts, clear_cache, drop_db
 from folder_list import (
     create_folder_list, create_count_label,
     add_folder, drop, clear_list, delete_selected, update_count,
-    save_folder_list, load_folder_list
+    save_folder_list, load_folder_list,
+    get_checked_folders,
 )
 from compare import try_compare, request_stop, reset_stop
 from logger import logger
@@ -79,18 +80,8 @@ def main():
     root.columnconfigure(0, weight=1)
 
     folder_list = create_folder_list(root)
-
-    scroll_y = tk.Scrollbar(root, orient="vertical")
-    scroll_y.grid(row=0, column=1, sticky="ns")
-
-    scroll_x = tk.Scrollbar(root, orient="horizontal")
-    scroll_x.grid(row=1, column=0, sticky="ew")
-
-    folder_list.config(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
-    folder_list.grid(row=0, column=0, sticky="nsew")
-
-    scroll_y.config(command=folder_list.yview)
-    scroll_x.config(command=folder_list.xview)
+    # create_folder_list가 내부에 Treeview + 스크롤바를 처리하므로
+    # 여기서 별도 스크롤바 설정은 하지 않음
 
     info_frame = tk.Frame(root)
     info_frame.grid(row=2, column=0, columnspan=2, sticky="w" )
@@ -216,6 +207,11 @@ def main():
             nonlocal is_comparing
             has_remaining = False
             try:
+                # 체크된 폴더 수 확인
+                checked = get_checked_folders(folder_list)
+                if not checked:
+                    logger.warning("[bold yellow][알림] 검사할 폴더가 선택되지 않았습니다. 폴더를 체크해주세요.[/bold yellow]")
+                    return
                 result = try_compare(folder_list)
                 total_duplicates = result.get("total_duplicates", 0) if isinstance(result, dict) else (result or 0)
                 has_remaining = bool(result.get("has_remaining", False)) if isinstance(result, dict) else False
@@ -238,8 +234,8 @@ def main():
 
     compare_btn.config(command=start_compare_thread)
 
-    folder_list.drop_target_register(DND_FILES)
-    folder_list.dnd_bind('<<Drop>>',
+    folder_list._tree.drop_target_register(DND_FILES)
+    folder_list._tree.dnd_bind('<<Drop>>',
         lambda e: drop(e, root, folder_list, update_count,
                        all_apply_var, last_depth_cache, lang, count_label))
 

@@ -156,7 +156,15 @@ def try_compare(folder_list):
         if groups:
             logger.info(f"[bold cyan][알림] 이전 저장된 중복 결과 {len(groups)}개 그룹을 불러왔습니다.")
 
-    folders = [entry.split(": ", 1)[1] for entry in folder_list.get(0, "end")]
+    # 체크된 폴더만 검색 대상으로 사용
+    # folder_list는 컨테이너 (Treeview + 필터 + 선택 버튼) 구조
+    try:
+        from folder_list import get_checked_folders
+        folders = get_checked_folders(folder_list)
+    except Exception:
+        # 이전 호환 (Listbox 직접 사용)
+        folders = [entry.split(": ", 1)[1] for entry in folder_list.get(0, "end")]
+    logger.info(f"[bold cyan][알림] 검사 폴더 {len(folders)}개 (체크된 것만)[/bold cyan]")
     init_db()
 
     # 비교 캐시를 메모리에 선로드 (DB 조회 병목 제거)
