@@ -7,6 +7,7 @@
 import os
 import sqlite3
 import time
+import numpy as np
 from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 
 from PIL import Image
@@ -52,11 +53,34 @@ def compute_hash_worker(path, method, hash_size):
             h = imagehash.dhash(img, hash_size=hash_size)
         elif method == "whash":
             h = imagehash.whash(img, hash_size=hash_size)
+        elif method == "bhash":
+            h = block_hash(img, hash_size=hash_size)
         else:
             return None
         return str(h)
     except Exception:
         return None
+
+
+def block_hash(img, hash_size=16):
+    """
+    블록 해시 (bHash).
+    - 이미지를 hash_size x hash_size 블록으로 나누어 각 블록의 평균 밝기 계산
+    - 전체 평균 밝기와 비교하여 이진 해시 생성
+    - all dup 프로그램의 bhash와 유사한 방식
+    - hash_size=256 지원 (256x256 = 65536비트 해시)
+    """
+    # 회색조로 변환
+    img = img.convert("L")
+    # hash_size x hash_size로 리사이즈
+    img = img.resize((hash_size, hash_size))
+    # 픽셀 데이터를 numpy 배열로 변환
+    arr = np.array(img, dtype=np.float64)
+    # 전체 평균 밝기
+    avg = arr.mean()
+    # 이진 해시: 각 블록이 평균보다 밝으면 1, 어두우면 0
+    hash_array = (arr > avg).astype(int)
+    return imagehash.ImageHash(hash_array)
 
 
 # ============================================================

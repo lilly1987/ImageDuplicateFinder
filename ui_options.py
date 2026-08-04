@@ -56,6 +56,7 @@ def show_options(root, lang):
         ("pHash (Perceptual Hash) - 시각적 유사성에 강함", "phash"),
         ("dHash (Difference Hash) - 구조적 차이 감지", "dhash"),
         ("wHash (Wavelet Hash) - 색상/패턴에 강함", "whash"),
+        ("bHash (Block Hash) - 블록 밝기 비교, 256x256 지원", "bhash"),
     ]
     for text, val in methods:
         tk.Radiobutton(scrollable_frame, text=text, variable=method_var, value=val).pack(anchor="w")
@@ -65,7 +66,7 @@ def show_options(root, lang):
     tk.Label(scrollable_frame, text=lang["ui"].get("hash_size", "해시 크기 (값이 클수록 정밀하지만 느려짐)"), font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 2))
     size_var = tk.IntVar(value=config.get("hash_size", 8))
     # imagehash는 hash_size=2의 제곱수만 지원하므로 드롭다운으로 제한
-    hash_size_options = [8, 16, 32, 64]
+    hash_size_options = [8, 16, 32, 64, 128, 256]
     # config 값이 목록에 없으면 가장 가까운 상위 값으로 보정
     config_hash_size = config.get("hash_size", 8)
     if config_hash_size not in hash_size_options:
@@ -79,7 +80,7 @@ def show_options(root, lang):
         width=10,
     )
     size_combo.pack(anchor="w")
-    tk.Label(scrollable_frame, text="해시 크기는 2의 제곱수(8, 16, 32, 64)만 지원합니다. 클수록 더 정밀하지만 계산 시간과 저장 공간이 늘어납니다.", fg="gray", wraplength=550, justify="left").pack(anchor="w", fill="x")
+    tk.Label(scrollable_frame, text="해시 크기는 2의 제곱수(8, 16, 32, 64, 128, 256)만 지원합니다. 클수록 더 정밀하지만 계산 시간과 저장 공간이 늘어납니다. (bHash는 256까지 지원)", fg="gray", wraplength=550, justify="left").pack(anchor="w", fill="x")
 
     # --- 해상도 비율 허용 오차 ---
     tk.Label(scrollable_frame, text=lang["ui"].get("ratio_tolerance", "해상도 비율 허용 오차 (예: 0.02)"), font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 2))
