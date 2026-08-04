@@ -8,6 +8,7 @@ from ui_options import *
 from ui_settings import show_settings_window
 from ui_results import show_duplicate_results_window
 
+from tooltip import add_tooltip
 from ui_cache import get_cache_counts, clear_cache, drop_db
 from folder_list import (
     create_folder_list, create_count_label,
@@ -95,8 +96,10 @@ def main():
     info_frame.grid(row=2, column=0, columnspan=2, sticky="w" )
 
     
-    tk.Button(info_frame, text=lang["ui"]["settings_button"],
-              command=lambda: show_single_window("settings", show_settings_window, root, lang)).pack(side="left")
+    settings_btn = tk.Button(info_frame, text=lang["ui"]["settings_button"],
+              command=lambda: show_single_window("settings", show_settings_window, root, lang))
+    settings_btn.pack(side="left")
+    add_tooltip(settings_btn, lang["ui"].get("tooltip_settings", ""))
 
     count_label = create_count_label(info_frame, lang)
     count_label.pack(side="left", padx=(0, 2))
@@ -113,14 +116,20 @@ def main():
         if verbose:
             logger.info(f"[bold cyan][알림] 캐시 건수 새로고침 완료 (알고리즘: {method}, 해시 크기: {hash_size}, 해시: {h_cnt:,}개, 비교: {c_cnt:,}개, 진행: {p_cnt:,}개, 중복: {d_cnt:,}개)[/bold cyan]")
 
-    tk.Button(info_frame, text="캐시 초기화",
-              command=lambda: clear_cache(update_cache_ui)).pack(side="left")
+    clear_cache_btn = tk.Button(info_frame, text="캐시 초기화",
+              command=lambda: clear_cache(update_cache_ui))
+    clear_cache_btn.pack(side="left")
+    add_tooltip(clear_cache_btn, lang["ui"].get("tooltip_cache_clear", ""))
 
-    tk.Button(info_frame, text="DB 삭제",
-              command=lambda: drop_db(update_cache_ui)).pack(side="left")
+    drop_db_btn = tk.Button(info_frame, text="DB 삭제",
+              command=lambda: drop_db(update_cache_ui))
+    drop_db_btn.pack(side="left")
+    add_tooltip(drop_db_btn, lang["ui"].get("tooltip_cache_drop", ""))
 
-    tk.Button(info_frame, text="캐시 새로고침",
-              command=lambda: update_cache_ui(verbose=True)).pack(side="left")
+    refresh_cache_btn = tk.Button(info_frame, text="캐시 새로고침",
+              command=lambda: update_cache_ui(verbose=True))
+    refresh_cache_btn.pack(side="left")
+    add_tooltip(refresh_cache_btn, lang["ui"].get("tooltip_cache_refresh", ""))
 
     update_cache_ui()
 
@@ -138,21 +147,28 @@ def main():
                    variable=all_apply_var,
                    command=save_apply_depth_option).pack(side="left")
 
-    tk.Button(button_frame, text=lang["ui"]["add_folder"],
+    add_folder_btn = tk.Button(button_frame, text=lang["ui"]["add_folder"],
               command=lambda: add_folder(root, folder_list, update_count,
-                                         all_apply_var, last_depth_cache, lang, count_label)).pack(side="left")
+                                         all_apply_var, last_depth_cache, lang, count_label))
+    add_folder_btn.pack(side="left")
+    add_tooltip(add_folder_btn, lang["ui"].get("tooltip_add_folder", ""))
 
-    tk.Button(button_frame, text=lang["ui"]["clear_list"],
-              command=lambda: clear_list(folder_list, update_count, lang, count_label)).pack(side="left")
+    clear_list_btn = tk.Button(button_frame, text=lang["ui"]["clear_list"],
+              command=lambda: clear_list(folder_list, update_count, lang, count_label))
+    clear_list_btn.pack(side="left")
+    add_tooltip(clear_list_btn, lang["ui"].get("tooltip_clear_list", ""))
 
-    tk.Button(button_frame, text=lang["ui"]["options_button"],
-                  command=lambda: show_single_window("options", show_options, root, lang)).pack(side="left")
+    options_btn = tk.Button(button_frame, text=lang["ui"]["options_button"],
+                  command=lambda: show_single_window("options", show_options, root, lang))
+    options_btn.pack(side="left")
+    add_tooltip(options_btn, lang["ui"].get("tooltip_options", ""))
 
     is_comparing = False
     user_stop_flag = {"requested": False}
 
     compare_btn = tk.Button(button_frame, text=lang["ui"]["compare_button"])
     compare_btn.pack(side="left")
+    add_tooltip(compare_btn, lang["ui"].get("tooltip_compare", ""))
 
     auto_retry_var = tk.BooleanVar(value=config.get("auto_retry_compare", False))
 
@@ -169,9 +185,12 @@ def main():
 
     stop_btn = tk.Button(button_frame, text=lang["ui"].get("stop_button", "비교 중단"), state="disabled")
     stop_btn.pack(side="left")
+    add_tooltip(stop_btn, lang["ui"].get("tooltip_stop", ""))
 
-    tk.Button(button_frame, text=lang["ui"].get("duplicate_results_window", "중복 결과"),
-              command=lambda: show_single_window("results", show_duplicate_results_window, root, lang)).pack(side="left")
+    results_btn = tk.Button(button_frame, text=lang["ui"].get("duplicate_results_window", "중복 결과"),
+              command=lambda: show_single_window("results", show_duplicate_results_window, root, lang))
+    results_btn.pack(side="left")
+    add_tooltip(results_btn, lang["ui"].get("tooltip_duplicate_results", ""))
 
     def on_stop_click():
         user_stop_flag["requested"] = True

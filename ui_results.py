@@ -22,6 +22,7 @@ from compare import (
     get_duplicate_groups,
     is_stop_requested,
 )
+from tooltip import add_tooltip
 from logger import logger
 
 
@@ -386,10 +387,21 @@ def show_duplicate_results_window(root, lang):
             for child_id in tree.get_children(group_id):
                 set_checked(child_id, not is_checked(child_id))
 
-    tk.Button(button_bar, text=lang["ui"].get("remove_missing", "없는파일 목록에서 제거"), command=remove_missing_files).pack(side="left")
-    tk.Button(button_bar, text=lang["ui"].get("remove_selected", "체크한 그룹/항목 목록에서 제거"), command=remove_selected_items).pack(side="left")
-    tk.Button(button_bar, text=lang["ui"].get("delete_selected_items", "선택 항목 실제 파일 삭제"), command=delete_selected_files).pack(side="left")
-    tk.Button(button_bar, text=lang["ui"].get("invert_selection", "선택 항목 반전"), command=invert_selection).pack(side="left")
+    remove_missing_btn = tk.Button(button_bar, text=lang["ui"].get("remove_missing", "없는파일 목록에서 제거"), command=remove_missing_files)
+    remove_missing_btn.pack(side="left")
+    add_tooltip(remove_missing_btn, lang["ui"].get("tooltip_remove_missing", ""))
+
+    remove_selected_btn = tk.Button(button_bar, text=lang["ui"].get("remove_selected", "체크한 그룹/항목 목록에서 제거"), command=remove_selected_items)
+    remove_selected_btn.pack(side="left")
+    add_tooltip(remove_selected_btn, lang["ui"].get("tooltip_remove_selected", ""))
+
+    delete_selected_btn = tk.Button(button_bar, text=lang["ui"].get("delete_selected_items", "선택 항목 실제 파일 삭제"), command=delete_selected_files)
+    delete_selected_btn.pack(side="left")
+    add_tooltip(delete_selected_btn, lang["ui"].get("tooltip_delete_selected", ""))
+
+    invert_btn = tk.Button(button_bar, text=lang["ui"].get("invert_selection", "선택 항목 반전"), command=invert_selection)
+    invert_btn.pack(side="left")
+    add_tooltip(invert_btn, lang["ui"].get("tooltip_invert_selection", ""))
 
     def refresh_results():
         """새로고침: 삭제/제거한 항목을 원본에 반영 후 원본에서 다시 복사해오기"""
@@ -401,7 +413,9 @@ def show_duplicate_results_window(root, lang):
         load_results()
         logger.info("[bold cyan][알림] 결과창 새로고침 완료[/bold cyan]")
 
-    tk.Button(button_bar, text=lang["ui"].get("refresh_results", "새로고침"), command=refresh_results).pack(side="left")
+    refresh_btn = tk.Button(button_bar, text=lang["ui"].get("refresh_results", "새로고침"), command=refresh_results)
+    refresh_btn.pack(side="left")
+    add_tooltip(refresh_btn, lang["ui"].get("tooltip_refresh_results", ""))
 
     def on_delete_key(event):
         remove_selected_items()

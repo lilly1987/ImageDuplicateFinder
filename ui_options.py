@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 from config import load_config, save_config
+from tooltip import add_tooltip
 
 def show_options(root, lang):
     win = tk.Toplevel(root)
@@ -194,4 +195,6 @@ def show_options(root, lang):
         save_config(config)
         win.destroy()
 
-    tk.Button(scrollable_frame, text=lang["ui"].get("save", "저장"), command=save).pack(pady=(20, 10))
+    save_btn = tk.Button(scrollable_frame, text=lang["ui"].get("save", "저장"), command=save)
+    save_btn.pack(pady=(20, 10))
+    add_tooltip(save_btn, lang["ui"].get("tooltip_save_options", ""))
