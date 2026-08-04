@@ -31,6 +31,68 @@ def show_duplicate_results_window(root, lang):
     win.title(lang["ui"].get("duplicate_results_window", "중복 결과"))
     win.geometry("1000x600")
 
+    # 상단 컨트롤 바 (검색 결과 선택 드롭다운 + 버튼들)
+    control_bar = tk.Frame(win)
+    control_bar.pack(side="top", fill="x")
+
+    # 검색 결과 선택 드롭다운
+    tk.Label(control_bar, text="검색 결과:").pack(side="left", padx=(5, 2))
+    search_var = tk.StringVar()
+    search_combo = ttk.Combobox(control_bar, textvariable=search_var, state="readonly", width=50)
+    search_combo.pack(side="left", padx=(0, 10))
+
+    def refresh_search_list():
+        """DB에서 사용 가능한 (method, hash_size) 조합 목록 조회"""
+        from database import db_lock, _get_all_table_names
+        import sqlite3
+        from compare import DB_FILE
+        options = []
+        try:
+            with db_lock:
+                conn = sqlite3.connect(DB_FILE, timeout=30)
+                cur = conn.cursor()
+                # duplicate_results 테이블들에서 (method, hash_size) 추출
+                tables = _get_all_table_names(cur, "duplicate_results")
+                for table in tables:
+                    # 테이블명에서 method와 hash_size 추출 (예: duplicate_results_ahash_8)
+                    parts = table.split("_", 3)
+                    if len(parts) >= 4:
+                        method = parts[2]
+                        try:
+                            hash_size = int(parts[3])
+                            options.append((f"{method} / hash_size={hash_size}", method, hash_size))
+                        except ValueError:
+                            pass
+                conn.close()
+        except Exception:
+            pass
+        # 건수가 있는 것만 필터링
+        valid_options = []
+        for label, method, hash_size in options:
+            try:
+                from comparator import load_duplicate_results_from_db
+                groups = load_duplicate_results_from_db(method, hash_size)
+                if groups and len(groups) > 0:
+                    valid_options.append((f"{label} ({len(groups)} groups)", method, hash_size))
+            except Exception:
+                pass
+        search_combo["values"] = [opt[0] for opt in valid_options]
+        search_combo._valid_options = valid_options
+        return valid_options
+
+    def on_search_selected(event=None):
+        """드롭다운 선택 시 해당 결과 로드"""
+        selected = search_combo.current()
+        if selected >= 0 and hasattr(search_combo, '_valid_options'):
+            _, method, hash_size = search_combo._valid_options[selected]
+            from comparator import load_duplicate_results_from_db
+            groups = load_duplicate_results_from_db(method, hash_size)
+            if groups:
+                _populate_tree(groups, live_label=False)
+                is_live_mode["value"] = False
+
+    search_combo.bind("<<ComboboxSelected>>", on_search_selected)
+
     button_bar = tk.Frame(win)
     button_bar.pack(side="top", fill="x")
 
@@ -496,10 +558,18 @@ def show_duplicate_results_window(root, lang):
             except Exception as e:
                 logger.error(f"[결과창 반영 오류] {e}")
 
+    # 검색 결과 목록 초기화
+    valid_options = refresh_search_list()
+    if valid_options:
+        # 기본값: 첫 번째 항목 (또는 현재 검사 진행 중인 것)
+        search_combo.current(0)
+        on_search_selected()
+    else:
+        # 결과가 없으면 기존 load_results() 시도
+        load_results()
+
     # 실시간 갱신 시작
     refresh_live_groups()
 
     # 창이 닫힐 때: 실시간 갱신 중지 + 변경사항 원본 반영
     win.bind("<Destroy>", lambda e: (stop_live_refresh(), apply_changes_on_close()))
-
-    load_results()
