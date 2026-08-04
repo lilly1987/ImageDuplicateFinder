@@ -1,5 +1,6 @@
 import os
 import json
+import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
@@ -9,6 +10,8 @@ from compare import (
     duplicate_results_json_path,
     resolve_search_options,
     remove_missing_files_from_cache,
+    get_duplicate_groups,
+    is_stop_requested,
 )
 
 
@@ -377,5 +380,49 @@ def show_duplicate_results_window(root, lang):
     tree.bind("<Shift-Delete>", on_shift_delete_key)
     win.bind("<Delete>", on_delete_key)
     win.bind("<Shift-Delete>", on_shift_delete_key)
+
+    # ============================================================
+    # 실시간 중복 그룹 갱신 (진행 중 비교 결과 표시)
+    # ============================================================
+    live_refresh_enabled = {"value": True}
+    live_refresh_after_id = {"id": None}
+
+    def refresh_live_groups():
+        """진행 중인 비교의 중복 그룹을 실시간으로 트리에 반영"""
+        if not live_refresh_enabled["value"]:
+            return
+        try:
+            # 진행 중이면 메모리 그룹을 실시간 표시
+            if not is_stop_requested():
+                groups = get_duplicate_groups()
+                if groups:
+                    # 기존 트리 항목과 비교하여 변경 시에만 갱신
+                    current_count = len(tree.get_children())
+                    if current_count != len(groups):
+                        tree.delete(*tree.get_children())
+                        for gi, group in enumerate(groups, start=1):
+                            parent_id = tree.insert("", "end", text=f"Group {gi} (실시간)", values=("☐", len(group), ""), open=True)
+                            for file_path in group:
+                                tree.insert(parent_id, "end", text=os.path.basename(file_path), values=("☐", "", file_path), tags=("item",), open=False)
+        except Exception:
+            pass
+        # 다음 폴링 예약 (1초 간격)
+        live_refresh_after_id["id"] = win.after(1000, refresh_live_groups)
+
+    def stop_live_refresh():
+        """실시간 갱신 중지"""
+        live_refresh_enabled["value"] = False
+        if live_refresh_after_id["id"] is not None:
+            try:
+                win.after_cancel(live_refresh_after_id["id"])
+            except Exception:
+                pass
+            live_refresh_after_id["id"] = None
+
+    # 창이 닫힐 때 실시간 갱신 중지
+    win.protocol("WM_DELETE_WINDOW", lambda: (stop_live_refresh(), win.destroy()))
+
+    # 실시간 갱신 시작
+    refresh_live_groups()
 
     load_results()

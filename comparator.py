@@ -513,6 +513,10 @@ def compare_file_with_list(file1, file2_list, method, hash_size, tolerance, verb
         if is_stop_requested():
             break
 
+        # 방어 코드: 사용자가 진행 중 파일을 삭제했을 수 있으므로 존재 확인
+        if not os.path.isfile(file2):
+            continue
+
         if hashes is not None:
             h2 = hashes.get(file2)
             if h2 is None:
