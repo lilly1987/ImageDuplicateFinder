@@ -33,6 +33,12 @@ DB_WRITE_FLUSH_INTERVAL = 2.0
 DB_WRITE_BATCH_SIZE = 1000
 
 
+def _table_name(base, method, hash_size):
+    """(method, hash_size)별 테이블명 생성: hash_cache_ahash_8"""
+    safe_method = method.replace("-", "_").replace(" ", "_")
+    return f"{base}_{safe_method}_{hash_size}"
+
+
 def set_db_write_options(flush_interval=None, batch_size=None):
     """DB 비동기 쓰기 옵션 설정 (config.yml에서 호출)"""
     global DB_WRITE_FLUSH_INTERVAL, DB_WRITE_BATCH_SIZE
@@ -56,7 +62,7 @@ def set_db_write_options(flush_interval=None, batch_size=None):
 # DB 초기화 및 스키마
 # ============================================================
 def init_db():
-    """DB 테이블 생성 (없으면 생성) 및 기존 스키마 마이그레이션"""
+    """DB 테이블 생성 (없으면 생성) - (method, hash_size)별 개별 테이블"""
     with db_lock:
         conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         try:
@@ -65,59 +71,98 @@ def init_db():
             cur.execute("PRAGMA journal_mode=WAL")
             cur.execute("PRAGMA synchronous=NORMAL")
             cur.execute("PRAGMA busy_timeout=30000")
-            # 해시 캐시: 파일 경로 + 알고리즘 + 해시 크기별 해시값
-            cur.execute("""CREATE TABLE IF NOT EXISTS hash_cache (
-                path TEXT,
-                method TEXT,
-                hash_size INTEGER,
-                hash TEXT,
-                mtime INTEGER,
-                size INTEGER,
-                PRIMARY KEY (path, method, hash_size)
-            )""")
-            # 비교 결과 캐시: 파일 쌍별 중복 여부 (정렬된 순서로 저장)
-            cur.execute("""CREATE TABLE IF NOT EXISTS compare_cache (
-                file1 TEXT,
-                file2 TEXT,
-                method TEXT,
-                hash_size INTEGER,
-                is_duplicate INTEGER,
-                PRIMARY KEY (file1, file2, method, hash_size)
-            )""")
-            # 증분 비교 진행 상태: 처리 완료된 파일 목록
-            cur.execute("""CREATE TABLE IF NOT EXISTS compare_progress (
-                method TEXT,
-                hash_size INTEGER,
-                path TEXT,
-                PRIMARY KEY (method, hash_size, path)
-            )""")
-            # 중복 결과 그룹: 그룹 ID별 파일 목록
-            cur.execute("""CREATE TABLE IF NOT EXISTS duplicate_results (
-                method TEXT,
-                hash_size INTEGER,
-                group_id INTEGER,
-                path TEXT,
-                PRIMARY KEY (method, hash_size, group_id, path)
-            )""")
 
-            # 기존 스키마 마이그레이션:
-            # 이전 버전의 compare_cache는 tolerance_rate 컬럼을 사용했음.
-            # 새 버전은 is_duplicate 컬럼을 사용하므로, 기존 데이터를 변환한다.
-            cur.execute("PRAGMA table_info(compare_cache)")
-            columns = [row[1] for row in cur.fetchall()]
-            if "tolerance_rate" in columns and "is_duplicate" not in columns:
-                logger.info("[bold cyan][알림] 기존 compare_cache 스키마를 새 버전으로 마이그레이션합니다.[/bold cyan]")
-                # tolerance_rate <= 0.0 이면 중복으로 간주 (기존 로직과 동일)
-                cur.execute("""ALTER TABLE compare_cache ADD COLUMN is_duplicate INTEGER DEFAULT 0""")
-                cur.execute("""
-                    UPDATE compare_cache
-                    SET is_duplicate = CASE WHEN tolerance_rate <= 0.0 THEN 1 ELSE 0 END
-                """)
-                conn.commit()
+            # 기존 단일 테이블에서 데이터 마이그레이션 (한 번만 실행)
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='hash_cache'")
+            if cur.fetchone():
+                logger.info("[bold cyan][알림] 기존 단일 테이블을 (method, hash_size)별 테이블로 마이그레이션합니다.[/bold cyan]")
+                _migrate_single_tables_to_per_method(cur, conn)
 
             conn.commit()
         finally:
             conn.close()
+
+
+def _migrate_single_tables_to_per_method(cur, conn):
+    """기존 단일 테이블에서 (method, hash_size)별 테이블로 데이터 이동"""
+    # 기존 테이블에서 (method, hash_size) 조합 추출
+    cur.execute("SELECT DISTINCT method, hash_size FROM hash_cache")
+    combos = cur.fetchall()
+    for method, hash_size in combos:
+        _ensure_tables_exist(cur, method, hash_size)
+        # 데이터 복사
+        cur.execute(
+            "SELECT path, hash, mtime, size FROM hash_cache WHERE method=? AND hash_size=?",
+            (method, hash_size)
+        )
+        for path, hash_text, mtime, size in cur.fetchall():
+            cur.execute(
+                f"INSERT OR REPLACE INTO {_table_name('hash_cache', method, hash_size)} (path, hash, mtime, size) VALUES (?,?,?,?)",
+                (path, hash_text, mtime, size)
+            )
+        cur.execute(
+            "SELECT file1, file2, is_duplicate FROM compare_cache WHERE method=? AND hash_size=?",
+            (method, hash_size)
+        )
+        for file1, file2, is_dup in cur.fetchall():
+            cur.execute(
+                f"INSERT OR REPLACE INTO {_table_name('compare_cache', method, hash_size)} (file1, file2, is_duplicate) VALUES (?,?,?)",
+                (file1, file2, is_dup)
+            )
+        cur.execute(
+            "SELECT path FROM compare_progress WHERE method=? AND hash_size=?",
+            (method, hash_size)
+        )
+        for (path,) in cur.fetchall():
+            cur.execute(
+                f"INSERT OR REPLACE INTO {_table_name('compare_progress', method, hash_size)} (path) VALUES (?)",
+                (path,)
+            )
+        cur.execute(
+            "SELECT group_id, path FROM duplicate_results WHERE method=? AND hash_size=?",
+            (method, hash_size)
+        )
+        for group_id, path in cur.fetchall():
+            cur.execute(
+                f"INSERT OR REPLACE INTO {_table_name('duplicate_results', method, hash_size)} (group_id, path) VALUES (?,?)",
+                (group_id, path)
+            )
+    # 기존 테이블 삭제
+    cur.execute("DROP TABLE IF EXISTS hash_cache")
+    cur.execute("DROP TABLE IF EXISTS compare_cache")
+    cur.execute("DROP TABLE IF EXISTS compare_progress")
+    cur.execute("DROP TABLE IF EXISTS duplicate_results")
+    conn.commit()
+    logger.info(f"[bold cyan][알림] 마이그레이션 완료: {len(combos)}개 (method, hash_size) 조합[/bold cyan]")
+
+
+def _ensure_tables_exist(cur, method, hash_size):
+    """(method, hash_size)별 테이블 생성 (없으면 생성)"""
+    hash_table = _table_name("hash_cache", method, hash_size)
+    compare_table = _table_name("compare_cache", method, hash_size)
+    progress_table = _table_name("compare_progress", method, hash_size)
+    results_table = _table_name("duplicate_results", method, hash_size)
+
+    cur.execute(f"""CREATE TABLE IF NOT EXISTS {hash_table} (
+        path TEXT PRIMARY KEY,
+        hash TEXT,
+        mtime INTEGER,
+        size INTEGER
+    )""")
+    cur.execute(f"""CREATE TABLE IF NOT EXISTS {compare_table} (
+        file1 TEXT,
+        file2 TEXT,
+        is_duplicate INTEGER,
+        PRIMARY KEY (file1, file2)
+    )""")
+    cur.execute(f"""CREATE TABLE IF NOT EXISTS {progress_table} (
+        path TEXT PRIMARY KEY
+    )""")
+    cur.execute(f"""CREATE TABLE IF NOT EXISTS {results_table} (
+        group_id INTEGER,
+        path TEXT,
+        PRIMARY KEY (group_id, path)
+    )""")
 
 
 # ============================================================
@@ -141,7 +186,7 @@ def _db_writer_loop():
 
 
 def _flush_db_writes():
-    """큐에 쌓인 쓰기 작업을 DB에 일괄 반영"""
+    """큐에 쌓인 쓰기 작업을 DB에 일괄 반영 (method, hash_size별 테이블 사용)"""
     with db_write_lock:
         hash_rows = list(hash_write_queue)
         compare_rows = list(compare_write_queue)
@@ -159,26 +204,63 @@ def _flush_db_writes():
         conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         try:
             cur = conn.cursor()
+
+            # hash_cache: (method, hash_size)별 테이블에 쓰기
             if hash_rows:
-                cur.executemany(
-                    "REPLACE INTO hash_cache (path, method, hash_size, hash, mtime, size) VALUES (?,?,?,?,?,?)",
-                    hash_rows
-                )
+                hash_groups = {}
+                for path, method, hash_size, hash_text, mtime, size in hash_rows:
+                    key = (method, hash_size)
+                    hash_groups.setdefault(key, []).append((path, hash_text, mtime, size))
+                for (method, hash_size), rows in hash_groups.items():
+                    _ensure_tables_exist(cur, method, hash_size)
+                    table = _table_name("hash_cache", method, hash_size)
+                    cur.executemany(
+                        f"REPLACE INTO {table} (path, hash, mtime, size) VALUES (?,?,?,?)",
+                        rows
+                    )
+
+            # compare_cache: (method, hash_size)별 테이블에 쓰기
             if compare_rows:
-                cur.executemany(
-                    "REPLACE INTO compare_cache (file1, file2, method, hash_size, is_duplicate) VALUES (?,?,?,?,?)",
-                    compare_rows
-                )
+                compare_groups = {}
+                for file1, file2, method, hash_size, is_dup in compare_rows:
+                    key = (method, hash_size)
+                    compare_groups.setdefault(key, []).append((file1, file2, int(is_dup)))
+                for (method, hash_size), rows in compare_groups.items():
+                    _ensure_tables_exist(cur, method, hash_size)
+                    table = _table_name("compare_cache", method, hash_size)
+                    cur.executemany(
+                        f"REPLACE INTO {table} (file1, file2, is_duplicate) VALUES (?,?,?)",
+                        rows
+                    )
+
+            # compare_progress: (method, hash_size)별 테이블에 쓰기
             if progress_rows:
-                cur.executemany(
-                    "REPLACE INTO compare_progress (method, hash_size, path) VALUES (?,?,?)",
-                    progress_rows
-                )
+                progress_groups = {}
+                for method, hash_size, path in progress_rows:
+                    key = (method, hash_size)
+                    progress_groups.setdefault(key, []).append((path,))
+                for (method, hash_size), rows in progress_groups.items():
+                    _ensure_tables_exist(cur, method, hash_size)
+                    table = _table_name("compare_progress", method, hash_size)
+                    cur.executemany(
+                        f"REPLACE INTO {table} (path) VALUES (?)",
+                        rows
+                    )
+
+            # duplicate_results: (method, hash_size)별 테이블에 쓰기
             if duplicate_rows:
-                cur.executemany(
-                    "REPLACE INTO duplicate_results (method, hash_size, group_id, path) VALUES (?,?,?,?)",
-                    duplicate_rows
-                )
+                dup_groups = {}
+                for method, hash_size, group_id, path in duplicate_rows:
+                    key = (method, hash_size)
+                    dup_groups.setdefault(key, []).append((group_id, path))
+                for (method, hash_size), rows in dup_groups.items():
+                    _ensure_tables_exist(cur, method, hash_size)
+                    table = _table_name("duplicate_results", method, hash_size)
+                    cur.executemany(
+                        f"REPLACE INTO {table} (group_id, path) VALUES (?,?)",
+                        rows
+                    )
+
             conn.commit()
         finally:
             conn.close()

@@ -13,7 +13,7 @@ from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 from PIL import Image
 import imagehash
 from logger import logger
-from database import DB_FILE, DB_TIMEOUT, db_lock, schedule_hash_cache_write, start_db_writer
+from database import DB_FILE, DB_TIMEOUT, db_lock, schedule_hash_cache_write, start_db_writer, _table_name, _ensure_tables_exist
 from state import hash_memory_cache, hash_memory_lock, is_stop_requested
 
 # 해시 계산 프로세스 풀
@@ -95,14 +95,16 @@ def get_file_hash(path, method="ahash", hash_size=8):
     except Exception:
         return None
 
-    # DB에서 해시 확인
+    # DB에서 해시 확인 (method, hash_size별 테이블)
+    hash_table = _table_name("hash_cache", method, hash_size)
     with db_lock:
         conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         try:
             cur = conn.cursor()
+            _ensure_tables_exist(cur, method, hash_size)
             cur.execute(
-                "SELECT hash, mtime, size FROM hash_cache WHERE path=? AND method=? AND hash_size=?",
-                (path, method, hash_size)
+                f"SELECT hash, mtime, size FROM {hash_table} WHERE path=?",
+                (path,)
             )
             row = cur.fetchone()
         finally:
@@ -176,6 +178,7 @@ def _query_cached_hashes(paths, method, hash_size):
 
     cached = {}
     chunk_size = 200
+    hash_table = _table_name("hash_cache", method, hash_size)
     for i in range(0, len(paths), chunk_size):
         chunk = paths[i:i + chunk_size]
         placeholders = ",".join("?" for _ in chunk)
@@ -183,9 +186,10 @@ def _query_cached_hashes(paths, method, hash_size):
             conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
             try:
                 cur = conn.cursor()
+                _ensure_tables_exist(cur, method, hash_size)
                 cur.execute(
-                    f"SELECT path, hash, mtime, size FROM hash_cache WHERE method=? AND hash_size=? AND path IN ({placeholders})",
-                    (method, hash_size, *chunk)
+                    f"SELECT path, hash, mtime, size FROM {hash_table} WHERE path IN ({placeholders})",
+                    (*chunk,)
                 )
                 rows = cur.fetchall()
             finally:
@@ -233,7 +237,7 @@ def precompute_hashes(paths, method, hash_size, batch_size=1000, max_new_hashes=
         missing = [p for p in missing if p not in previous_set]
         logger.info(f"[bold cyan][알림] 증분 비교 기준으로 새 해시 계산 대상 {len(missing)}개만 선택했습니다.[/bold cyan]")
 
-    # DB 캐시에서 조회
+    # DB 캐시에서 조회 (method, hash_size별 테이블)
     if missing:
         db_hashes = _query_cached_hashes(missing, method, hash_size)
         with hash_memory_lock:

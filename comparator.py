@@ -14,6 +14,7 @@ from logger import logger
 from database import (
     DB_FILE, DB_TIMEOUT, db_lock,
     schedule_compare_record, schedule_progress_record,
+    _table_name, _ensure_tables_exist,
 )
 from hasher import get_cached_file_hash
 from state import (
@@ -76,14 +77,16 @@ def already_compared(file1, file2, method, hash_size):
     if _compare_cache_loaded:
         return None
 
-    # DB 확인
+    # DB 확인 (method, hash_size별 테이블)
+    compare_table = _table_name("compare_cache", method, hash_size)
     with db_lock:
         conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         try:
             cur = conn.cursor()
+            _ensure_tables_exist(cur, method, hash_size)
             cur.execute(
-                "SELECT is_duplicate FROM compare_cache WHERE file1=? AND file2=? AND method=? AND hash_size=?",
-                (f1, f2, method, hash_size)
+                f"SELECT is_duplicate FROM {compare_table} WHERE file1=? AND file2=?",
+                (f1, f2)
             )
             row = cur.fetchone()
             result = bool(row[0]) if row else None
@@ -110,15 +113,14 @@ def add_compare_record(file1, file2, method, hash_size, is_duplicate):
 # 증분 비교 진행 상태 관리
 # ============================================================
 def get_processed_compare_files(method, hash_size):
-    """DB에서 처리 완료된 파일 목록 조회"""
+    """DB에서 처리 완료된 파일 목록 조회 (method, hash_size별 테이블)"""
+    progress_table = _table_name("compare_progress", method, hash_size)
     with db_lock:
         conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         try:
             cur = conn.cursor()
-            cur.execute(
-                "SELECT path FROM compare_progress WHERE method=? AND hash_size=?",
-                (method, hash_size)
-            )
+            _ensure_tables_exist(cur, method, hash_size)
+            cur.execute(f"SELECT path FROM {progress_table}")
             return [row[0] for row in cur.fetchall()]
         finally:
             conn.close()
@@ -185,25 +187,23 @@ def get_duplicate_groups():
 # 중복 결과 DB 저장/로드
 # ============================================================
 def save_duplicate_results_to_db(method, hash_size):
-    """중복 결과를 DB에 저장"""
+    """중복 결과를 DB에 저장 (method, hash_size별 테이블)"""
     groups = get_duplicate_groups()
     if not groups:
         return
 
-    # 기존 DB 결과 삭제 후 재저장
+    results_table = _table_name("duplicate_results", method, hash_size)
     with db_lock:
         conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         try:
             cur = conn.cursor()
-            cur.execute(
-                "DELETE FROM duplicate_results WHERE method=? AND hash_size=?",
-                (method, hash_size)
-            )
+            _ensure_tables_exist(cur, method, hash_size)
+            cur.execute(f"DELETE FROM {results_table}")
             for group_id, group in enumerate(groups):
                 for path in sorted(group):
                     cur.execute(
-                        "REPLACE INTO duplicate_results (method, hash_size, group_id, path) VALUES (?,?,?,?)",
-                        (method, hash_size, group_id, path)
+                        f"REPLACE INTO {results_table} (group_id, path) VALUES (?,?)",
+                        (group_id, path)
                     )
             conn.commit()
         finally:
@@ -211,15 +211,14 @@ def save_duplicate_results_to_db(method, hash_size):
 
 
 def load_duplicate_results_from_db(method, hash_size):
-    """DB에서 중복 결과 로드"""
+    """DB에서 중복 결과 로드 (method, hash_size별 테이블)"""
+    results_table = _table_name("duplicate_results", method, hash_size)
     with db_lock:
         conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         try:
             cur = conn.cursor()
-            cur.execute(
-                "SELECT group_id, path FROM duplicate_results WHERE method=? AND hash_size=? ORDER BY group_id, path",
-                (method, hash_size)
-            )
+            _ensure_tables_exist(cur, method, hash_size)
+            cur.execute(f"SELECT group_id, path FROM {results_table} ORDER BY group_id, path")
             rows = cur.fetchall()
         finally:
             conn.close()
@@ -256,31 +255,24 @@ def remove_missing_files_from_cache(method, hash_size, missing_paths):
     if not missing_paths:
         return
 
+    hash_table = _table_name("hash_cache", method, hash_size)
+    compare_table = _table_name("compare_cache", method, hash_size)
+    progress_table = _table_name("compare_progress", method, hash_size)
+    results_table = _table_name("duplicate_results", method, hash_size)
     with db_lock:
         conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         try:
             cur = conn.cursor()
+            _ensure_tables_exist(cur, method, hash_size)
             for path in missing_paths:
                 # 해시 캐시에서 제거
-                cur.execute(
-                    "DELETE FROM hash_cache WHERE path=? AND method=? AND hash_size=?",
-                    (path, method, hash_size)
-                )
+                cur.execute(f"DELETE FROM {hash_table} WHERE path=?", (path,))
                 # 비교 캐시에서 제거 (file1 또는 file2에 포함된 쌍)
-                cur.execute(
-                    "DELETE FROM compare_cache WHERE (file1=? OR file2=?) AND method=? AND hash_size=?",
-                    (path, path, method, hash_size)
-                )
+                cur.execute(f"DELETE FROM {compare_table} WHERE file1=? OR file2=?", (path, path))
                 # 진행 상태에서 제거
-                cur.execute(
-                    "DELETE FROM compare_progress WHERE path=? AND method=? AND hash_size=?",
-                    (path, method, hash_size)
-                )
+                cur.execute(f"DELETE FROM {progress_table} WHERE path=?", (path,))
                 # 중복 결과에서 제거
-                cur.execute(
-                    "DELETE FROM duplicate_results WHERE path=? AND method=? AND hash_size=?",
-                    (path, method, hash_size)
-                )
+                cur.execute(f"DELETE FROM {results_table} WHERE path=?", (path,))
             conn.commit()
         finally:
             conn.close()
@@ -501,14 +493,13 @@ def preload_compare_cache(method, hash_size, max_memory_mb=0):
         _compare_cache_loaded = True
 
     logger.info(f"[bold cyan][알림] 비교 캐시를 메모리에 선로드합니다. (max_memory_mb={max_memory_mb})[/bold cyan]")
+    compare_table = _table_name("compare_cache", method, hash_size)
     with db_lock:
         conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         try:
             cur = conn.cursor()
-            cur.execute(
-                "SELECT file1, file2, is_duplicate FROM compare_cache WHERE method=? AND hash_size=?",
-                (method, hash_size)
-            )
+            _ensure_tables_exist(cur, method, hash_size)
+            cur.execute(f"SELECT file1, file2, is_duplicate FROM {compare_table}")
             rows = cur.fetchall()
         finally:
             conn.close()
