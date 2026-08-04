@@ -41,6 +41,13 @@ def show_duplicate_results_window(root, lang):
     search_combo = ttk.Combobox(control_bar, textvariable=search_var, state="readonly", width=50)
     search_combo.pack(side="left", padx=(0, 10))
 
+    # 파일 경로 필터 입력
+    tk.Label(control_bar, text="경로 필터:").pack(side="left", padx=(5, 2))
+    path_filter_var = tk.StringVar()
+    path_filter_entry = tk.Entry(control_bar, textvariable=path_filter_var, width=30)
+    path_filter_entry.pack(side="left", padx=(0, 5))
+    path_filter_entry.bind("<KeyRelease>", lambda e: _apply_path_filter())
+
     def refresh_search_list():
         """DB 테이블 + JSON 파일 + 진행 중(Live) 검색 결과 목록 조회 (건수 계산 없음)"""
         import glob
@@ -307,6 +314,26 @@ def show_duplicate_results_window(root, lang):
             if first_item is not None:
                 tree.selection_set(first_item)
                 tree.focus(first_item)
+        # 필터 적용 (이미 입력된 필터가 있으면)
+        _apply_path_filter()
+
+    def _apply_path_filter():
+        """파일 경로 필터 적용 (트리 항목 표시/숨김)"""
+        keyword = path_filter_var.get().strip().lower()
+        for group_id in tree.get_children():
+            group_visible = False
+            for child_id in tree.get_children(group_id):
+                path = tree.set(child_id, "path").lower()
+                if keyword and keyword not in path:
+                    tree.detach(child_id)
+                else:
+                    tree.reattach(child_id, group_id, 0)
+                    group_visible = True
+            # 그룹에 표시할 항목이 없으면 그룹도 숨김
+            if not group_visible:
+                tree.detach(group_id)
+            else:
+                tree.reattach(group_id, "", 0)
 
     def load_results():
         """저장된 결과를 로드하여 복사본으로 작업"""
