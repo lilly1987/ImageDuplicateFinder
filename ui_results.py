@@ -1,5 +1,14 @@
+"""
+중복 결과 창 모듈.
+
+- 결과창은 원본 중복 결과의 복사본으로 작업 (검사 엔진과 격리)
+- 실시간 갱신 시 saved_groups 동기화
+- 창 닫기 시 삭제/제거 내용을 원본에 반영 (JSON 저장 + DB 캐시 정리)
+"""
+
 import os
 import json
+import copy
 import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -13,6 +22,7 @@ from compare import (
     get_duplicate_groups,
     is_stop_requested,
 )
+from logger import logger
 
 
 def show_duplicate_results_window(root, lang):
@@ -71,7 +81,14 @@ def show_duplicate_results_window(root, lang):
 
     preview_images = []
 
+    # ============================================================
+    # 결과창 내부 복사본 (원본과 격리)
+    # ============================================================
+    # saved_groups: 결과창에서 작업하는 복사본 (원본에 영향 없음)
+    # deleted_paths: 결과창에서 삭제/제거된 파일 경로 (창 닫기 시 원본에 반영)
     saved_groups = []
+    deleted_paths = set()  # 실제 파일 삭제 + 목록 제거된 경로
+    is_live_mode = {"value": False}  # 실시간 모드 여부
 
     def is_checked(item_id):
         return tree.set(item_id, "checked") == "☑"
@@ -112,12 +129,6 @@ def show_duplicate_results_window(root, lang):
         if os.path.isfile(file_path):
             os.startfile(file_path)
 
-    def preview_open_file(event, path):
-        open_file(path)
-
-    def preview_open_folder(event, path):
-        open_folder_for_file(path)
-
     def tree_open_item(item_id, open_file_only):
         if not item_id:
             return
@@ -141,6 +152,7 @@ def show_duplicate_results_window(root, lang):
         return duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance_rate)
 
     def save_duplicate_groups_json(groups):
+        """복사본을 JSON 파일로 저장"""
         method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
         data = {
             "saved_at": datetime.now().isoformat(),
@@ -155,18 +167,16 @@ def show_duplicate_results_window(root, lang):
         with open(_current_results_path(), "w", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False, indent=2)
 
-    def load_results():
+    def _populate_tree(groups, live_label=False):
+        """트리를 groups 데이터로 채우고 saved_groups 동기화"""
         nonlocal saved_groups
-        method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
-        groups = load_duplicate_results_json(method, hash_size, aspect_ratio_tol, tolerance_rate)
-        if groups is None:
-            messagebox.showinfo(lang["ui"].get("info", "정보"), lang["ui"].get("no_saved_results", "저장된 중복 검색 결과가 없습니다."))
-            return []
-        saved_groups = groups
+        # 깊은 복사본으로 작업 (원본과 격리)
+        saved_groups = [list(g) for g in groups] if groups else []
         tree.delete(*tree.get_children())
         first_item = None
-        for gi, group in enumerate(groups, start=1):
-            parent_id = tree.insert("", "end", text=f"Group {gi}", values=("☐", len(group), ""), open=True)
+        label_suffix = " (실시간)" if live_label else ""
+        for gi, group in enumerate(saved_groups, start=1):
+            parent_id = tree.insert("", "end", text=f"Group {gi}{label_suffix}", values=("☐", len(group), ""), open=True)
             for file_path in group:
                 child_id = tree.insert(parent_id, "end", text=os.path.basename(file_path), values=("☐", "", file_path), tags=("item",), open=False)
                 if first_item is None:
@@ -176,7 +186,17 @@ def show_duplicate_results_window(root, lang):
             if first_item is not None:
                 tree.selection_set(first_item)
                 tree.focus(first_item)
-        return groups
+
+    def load_results():
+        """저장된 결과를 로드하여 복사본으로 작업"""
+        method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
+        groups = load_duplicate_results_json(method, hash_size, aspect_ratio_tol, tolerance_rate)
+        if groups is None:
+            messagebox.showinfo(lang["ui"].get("info", "정보"), lang["ui"].get("no_saved_results", "저장된 중복 검색 결과가 없습니다."))
+            return []
+        is_live_mode["value"] = False
+        _populate_tree(groups, live_label=False)
+        return saved_groups
 
     def display_preview_for_group(group):
         nonlocal preview_images
@@ -227,6 +247,7 @@ def show_duplicate_results_window(root, lang):
                 label.pack(fill="x")
 
     def show_selected_preview(event=None):
+        """선택된 트리 항목의 그룹 미리보기 표시 (saved_groups 기준)"""
         selected = tree.selection()
         if not selected:
             return
@@ -234,11 +255,11 @@ def show_duplicate_results_window(root, lang):
         parent_id = tree.parent(item_id)
         if parent_id:
             group_index = tree.index(parent_id)
-            display_preview_for_group(saved_groups[group_index])
         else:
             group_index = tree.index(item_id)
-            if saved_groups and 0 <= group_index < len(saved_groups):
-                display_preview_for_group(saved_groups[group_index])
+        # saved_groups 범위 체크 후 미리보기
+        if 0 <= group_index < len(saved_groups):
+            display_preview_for_group(saved_groups[group_index])
 
     def on_tree_click(event):
         item_id = tree.identify_row(event.y)
@@ -275,6 +296,7 @@ def show_duplicate_results_window(root, lang):
         return "break"
 
     def remove_missing_files():
+        """존재하지 않는 파일을 복사본에서 제거"""
         if not saved_groups:
             return
         changed = False
@@ -287,6 +309,7 @@ def show_duplicate_results_window(root, lang):
                     remaining.append(p)
                 else:
                     missing_paths.append(p)
+                    deleted_paths.add(p)
                     changed = True
             if len(remaining) > 1:
                 new_groups.append(remaining)
@@ -296,9 +319,10 @@ def show_duplicate_results_window(root, lang):
             remove_missing_files_from_cache(method, hash_size, missing_paths)
             save_duplicate_groups_json(new_groups)
             messagebox.showinfo(lang["ui"].get("info", "정보"), lang["ui"].get("removed_missing", "없는 파일 목록이 제거되었습니다."))
-            load_results()
+            _populate_tree(new_groups, live_label=False)
 
     def remove_selected_items():
+        """선택된 항목을 복사본에서 제거 (실제 파일 삭제 아님)"""
         checked_groups, checked_files = get_checked_items()
         if not checked_groups and not checked_files:
             return
@@ -306,6 +330,8 @@ def show_duplicate_results_window(root, lang):
         current_groups = [list(g) for g in saved_groups]
         for group_index in sorted(checked_groups, reverse=True):
             if 0 <= group_index < len(current_groups):
+                for p in current_groups[group_index]:
+                    deleted_paths.add(p)
                 current_groups[group_index] = []
                 changed = True
         for file_path, group_id in checked_files:
@@ -313,13 +339,15 @@ def show_duplicate_results_window(root, lang):
             if 0 <= group_index < len(current_groups):
                 if file_path in current_groups[group_index]:
                     current_groups[group_index].remove(file_path)
+                    deleted_paths.add(file_path)
                     changed = True
         new_groups = [g for g in current_groups if len(g) > 1]
         if changed:
             save_duplicate_groups_json(new_groups)
-            load_results()
+            _populate_tree(new_groups, live_label=False)
 
     def delete_selected_files():
+        """선택된 파일을 실제로 삭제하고 복사본에서도 제거"""
         checked_groups, checked_files = get_checked_items()
         if not checked_groups and not checked_files:
             return
@@ -340,8 +368,8 @@ def show_duplicate_results_window(root, lang):
         for file_path in paths_to_delete:
             try:
                 if os.path.isfile(file_path):
-                    print(f"Deleting file: {file_path}")
                     os.remove(file_path)
+                    deleted_paths.add(file_path)
             except OSError:
                 failed.append(file_path)
         remove_selected_items()
@@ -396,14 +424,12 @@ def show_duplicate_results_window(root, lang):
             if not is_stop_requested():
                 groups = get_duplicate_groups()
                 if groups:
-                    # 기존 트리 항목과 비교하여 변경 시에만 갱신
+                    # 기존 트리 항목 수와 비교하여 변경 시에만 갱신
                     current_count = len(tree.get_children())
                     if current_count != len(groups):
-                        tree.delete(*tree.get_children())
-                        for gi, group in enumerate(groups, start=1):
-                            parent_id = tree.insert("", "end", text=f"Group {gi} (실시간)", values=("☐", len(group), ""), open=True)
-                            for file_path in group:
-                                tree.insert(parent_id, "end", text=os.path.basename(file_path), values=("☐", "", file_path), tags=("item",), open=False)
+                        # 실시간 모드: saved_groups를 동기화하며 트리 갱신
+                        is_live_mode["value"] = True
+                        _populate_tree(groups, live_label=True)
         except Exception:
             pass
         # 다음 폴링 예약 (1초 간격)
@@ -419,12 +445,24 @@ def show_duplicate_results_window(root, lang):
                 pass
             live_refresh_after_id["id"] = None
 
+    def apply_changes_on_close():
+        """창 닫기 시 삭제/제거된 파일을 원본 결과에 반영"""
+        if deleted_paths:
+            try:
+                method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
+                # DB 캐시에서 삭제된 파일 제거
+                remove_missing_files_from_cache(method, hash_size, list(deleted_paths))
+                # 수정된 그룹을 JSON에 저장
+                if saved_groups:
+                    save_duplicate_groups_json([list(g) for g in saved_groups if len(g) > 1])
+                logger.info(f"[bold cyan][알림] 결과창 변경사항 반영: {len(deleted_paths)}개 파일 제거됨[/bold cyan]")
+            except Exception as e:
+                logger.error(f"[결과창 반영 오류] {e}")
+
     # 실시간 갱신 시작
     refresh_live_groups()
 
-    # 창이 닫힐 때 실시간 갱신 중지
-    # (run.py의 show_single_window에서 WM_DELETE_WINDOW를 관리하므로
-    #  여기서는 별도로 설정하지 않고, stop_live_refresh를 atexit 대용으로 등록)
-    win.bind("<Destroy>", lambda e: stop_live_refresh())
+    # 창이 닫힐 때: 실시간 갱신 중지 + 변경사항 원본 반영
+    win.bind("<Destroy>", lambda e: (stop_live_refresh(), apply_changes_on_close()))
 
     load_results()
