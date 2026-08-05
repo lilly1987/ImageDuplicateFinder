@@ -4,6 +4,7 @@ ui:
   compare_mode: "검색 모드"
   include_subfolders: "하위 폴더 옵션"
   language: "언어"
+  save_txt_results: "txt 파일로 결과 저장"
   save: "저장"
   options_button: "검색 옵션"
   settings_button: "설정"

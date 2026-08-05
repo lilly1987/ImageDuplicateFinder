@@ -199,9 +199,12 @@ def try_compare(folder_list):
         result_path = None
         json_path = None
         try:
-            result_path = write_result_file_if_any(method, hash_size, aspect_ratio_tol, tolerance_rate)
-            if result_path:
-                logger.info(f"[bold green][결과 저장][/bold green] {result_path}")
+            # txt 결과 저장 여부 설정 (config의 save_txt_results, 기본 True)
+            save_txt_results = options.get("save_txt_results", True)
+            if save_txt_results:
+                result_path = write_result_file_if_any(method, hash_size, aspect_ratio_tol, tolerance_rate)
+                if result_path:
+                    logger.info(f"[bold green][결과 저장][/bold green] {result_path}")
         except Exception:
             pass
 

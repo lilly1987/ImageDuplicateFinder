@@ -4,6 +4,7 @@ ui:
   compare_mode: "Compare Mode"
   include_subfolders: "Include Subfolders"
   language: "Language"
+  save_txt_results: "Save results to txt"
   save: "Save"
   options_button: "Search Options"
   settings_button: "Settings"
@@ -76,4 +77,3 @@ ui:
   tooltip_deselect_all: "Uncheck all groups and items."
   tooltip_refresh_results: "Refresh: apply deletions/removals to the original results, then reload from source."
   tooltip_save_options: "Save all option changes to config.yml."
-</arg_value></tool_call>
