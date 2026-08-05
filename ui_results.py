@@ -341,6 +341,8 @@ def show_duplicate_results_window(root, lang, folder_list=None):
     all_group_tree_nodes = []  # [(parent_id, [child_id, ...]), ...] 구조를 보관하여 필터링 시 reattach 복원용
     deleted_paths = set()  # 실제 파일 삭제 + 목록 제거된 경로
     is_live_mode = {"value": False}  # 실시간 모드 여부
+    # 사용자가 체크 작업 중일 때 실시간 갱신을 유예하는 쿨다운 시각 (time.time() 기준)
+    live_refresh_cooldown_until = {"value": 0.0}
 
     def is_checked(item_id):
         return tree.set(item_id, "checked") == "☑"
@@ -349,6 +351,8 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         tree.set(item_id, "checked", "☑" if checked else "☐")
 
     def toggle_checked(item_id):
+        # 체크 작업 중 실시간 새로고침이 방해하지 않도록 5초간 갱신 유예
+        live_refresh_cooldown_until["value"] = time.time() + 5
         current = is_checked(item_id)
         set_checked(item_id, not current)
         if tree.parent(item_id) == "":
@@ -847,6 +851,8 @@ def show_duplicate_results_window(root, lang, folder_list=None):
             win.focus_force()
 
     def invert_selection():
+        # 일괄 체크 작업 중 실시간 새로고침 유예
+        live_refresh_cooldown_until["value"] = time.time() + 5
         for group_id in tree.get_children():
             current_group = is_checked(group_id)
             set_checked(group_id, not current_group)
@@ -856,6 +862,8 @@ def show_duplicate_results_window(root, lang, folder_list=None):
 
     def select_all():
         """모든 그룹/항목 체크"""
+        # 일괄 체크 작업 중 실시간 새로고침 유예
+        live_refresh_cooldown_until["value"] = time.time() + 5
         for group_id in tree.get_children():
             set_checked(group_id, True)
             for child_id in tree.get_children(group_id):
@@ -864,6 +872,8 @@ def show_duplicate_results_window(root, lang, folder_list=None):
 
     def deselect_all():
         """모든 그룹/항목 체크 해제"""
+        # 일괄 체크 해제 작업 중 실시간 새로고침 유예
+        live_refresh_cooldown_until["value"] = time.time() + 5
         for group_id in tree.get_children():
             set_checked(group_id, False)
             for child_id in tree.get_children(group_id):
@@ -938,6 +948,11 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         if not live_refresh_enabled["value"]:
             return
 
+        # 사용자가 체크 작업 중이면 갱신 유예 (체크 상태가 초기화되지 않도록)
+        if time.time() < live_refresh_cooldown_until["value"]:
+            live_refresh_after_id["id"] = win.after(2000, refresh_live_groups)
+            return
+
         # 백그라운드 스레드에서 get_duplicate_groups() 실행 (UI 블로킹 방지)
         def fetch_groups():
             if not live_refresh_enabled["value"]:
@@ -971,6 +986,21 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         nonlocal saved_groups, all_group_tree_nodes
         _cancel_chunk_job()
         groups = _filter_groups_by_folder(groups)
+
+        # 재구성 전 현재 체크 상태를 경로 기준으로 백업 (체크 초기화 방지)
+        checked_paths = set()
+        for _group_id in tree.get_children():
+            for _child_id in tree.get_children(_group_id):
+                if is_checked(_child_id):
+                    _p = tree.set(_child_id, "path")
+                    if _p:
+                        checked_paths.add(_p)
+            if is_checked(_group_id):
+                for _child_id in tree.get_children(_group_id):
+                    _p = tree.set(_child_id, "path")
+                    if _p:
+                        checked_paths.add(_p)
+
         selected_preview_group = None
         selected = tree.selection()
         if selected:
@@ -1005,6 +1035,12 @@ def show_duplicate_results_window(root, lang, folder_list=None):
                 for file_path in group:
                     child_id = tree.insert(parent_id, "end", text=os.path.basename(file_path), values=("☐", "", file_path), tags=("item",), open=False)
                     child_ids.append(child_id)
+                    # 경로 기준으로 이전 체크 상태 복원
+                    if file_path in checked_paths:
+                        set_checked(child_id, True)
+                # 그룹의 모든 자식이 체크되었으면 그룹도 체크
+                if child_ids and all(is_checked(cid) for cid in child_ids):
+                    set_checked(parent_id, True)
                 all_group_tree_nodes.append((parent_id, child_ids))
 
             _apply_path_filter()
