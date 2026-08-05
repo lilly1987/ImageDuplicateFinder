@@ -45,6 +45,8 @@ def create_folder_list(root):
     # ---- 하단: 체크박스 Treeview ----
     tree_frame = tk.Frame(container)
     tree_frame.pack(side="top", fill="both", expand=True)
+    tree_frame.grid_rowconfigure(0, weight=1)
+    tree_frame.grid_columnconfigure(0, weight=1)
 
     tree = ttk.Treeview(tree_frame, columns=("checked", "path"), show="tree headings", selectmode="extended")
     tree.heading("#0", text="")
@@ -52,12 +54,16 @@ def create_folder_list(root):
     tree.heading("path", text="폴더 경로")
     tree.column("#0", width=40, anchor="center", stretch=False)
     tree.column("checked", width=60, anchor="center", stretch=False)
-    tree.column("path", width=600, anchor="w", stretch=True)
-    tree.pack(side="left", fill="both", expand=True)
+    tree.column("path", width=1500, minwidth=600, anchor="w", stretch=False)
+    tree.grid(row=0, column=0, sticky="nsew")
 
     scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
     tree.configure(yscrollcommand=scrollbar.set)
-    scrollbar.pack(side="right", fill="y")
+    scrollbar.grid(row=0, column=1, sticky="ns")
+
+    h_scrollbar = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+    tree.configure(xscrollcommand=h_scrollbar.set)
+    h_scrollbar.grid(row=1, column=0, sticky="ew")
 
     # 체크박스 토글 클릭
     tree.bind("<Button-1>", lambda e: _on_tree_click(tree, e))
