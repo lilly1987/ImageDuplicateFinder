@@ -175,17 +175,14 @@ def show_duplicate_results_window(root, lang):
         )
         status_bar.config(text=f"그룹: {group_count} | 항목: {item_count} | 체크: {checked_count}")
 
-    main_frame = tk.Frame(win)
-    main_frame.pack(fill="both", expand=True)
-    main_frame.grid_rowconfigure(0, weight=1)
-    main_frame.grid_columnconfigure(0, weight=1)
-    main_frame.grid_columnconfigure(1, weight=2)
+    paned = ttk.PanedWindow(win, orient="horizontal")
+    paned.pack(fill="both", expand=True)
 
-    tree_frame = tk.Frame(main_frame)
-    tree_frame.grid(row=0, column=0, sticky="nsew")
+    tree_frame = tk.Frame(paned)
+    detail_frame = tk.Frame(paned)
 
-    detail_frame = tk.Frame(main_frame)
-    detail_frame.grid(row=0, column=1, sticky="nsew")
+    paned.add(tree_frame, weight=1)
+    paned.add(detail_frame, weight=1)
 
     tree_frame.grid_rowconfigure(0, weight=1)
     tree_frame.grid_columnconfigure(0, weight=1)
