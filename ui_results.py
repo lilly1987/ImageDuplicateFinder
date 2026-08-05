@@ -195,10 +195,10 @@ def show_duplicate_results_window(root, lang):
     tree.heading("checked", text=lang["ui"].get("check", "선택"))
     tree.heading("count", text=lang["ui"].get("group_count", "항목 수"))
     tree.heading("path", text=lang["ui"].get("file_path", "파일 경로"))
-    tree.column("#0", width=220, anchor="w", stretch=True)
+    tree.column("#0", width=220, anchor="w", stretch=False)
     tree.column("checked", width=60, anchor="center", stretch=False)
     tree.column("count", width=80, anchor="center", stretch=False)
-    tree.column("path", width=420, anchor="w", stretch=True)
+    tree.column("path", width=1500, minwidth=600, anchor="w", stretch=False)
     tree.grid(row=0, column=0, sticky="nsew")
 
     scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
