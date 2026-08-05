@@ -11,6 +11,7 @@ import os
 import json
 import copy
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
@@ -257,8 +258,12 @@ def show_duplicate_results_window(root, lang, folder_list=None):
     paned.add(tree_frame, weight=1)
     paned.add(detail_frame, weight=1)
 
-    # 창이 그려진 후 분할선(sash) 위치를 정확히 1:1 (중앙)로 설정
-    def _set_initial_sash_position():
+    # 창이 그려진 후 분할선(sash) 위치를 정확히 1:1 (중앙)로 유지
+    # - 트리 컬럼 폭(requested size)이 커서 PanedWindow가 sash를 오른쪽으로
+    #   밀어내는 문제를 방지하기 위해 최초 5초 동안 Configure 때마다 50% 재설정
+    _sash_lock_until = {"end": 0}
+
+    def _set_sash_center():
         try:
             win.update_idletasks()
             total_width = paned.winfo_width()
@@ -267,7 +272,16 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         except Exception:
             pass
 
-    win.after(100, _set_initial_sash_position)
+    def _on_win_configure(event):
+        # 최초 표시 후 5초 동안은 창 크기 변경 시에도 좌우 1:1 유지
+        if event.widget == win and time.time() < _sash_lock_until["end"]:
+            win.after_idle(_set_sash_center)
+
+    _sash_lock_until["end"] = time.time() + 5
+    win.bind("<Configure>", _on_win_configure)
+    win.after(100, _set_sash_center)
+    win.after(300, _set_sash_center)
+    win.after(500, _set_sash_center)
 
     tree_frame.grid_rowconfigure(0, weight=1)
     tree_frame.grid_columnconfigure(0, weight=1)
