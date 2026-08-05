@@ -290,10 +290,12 @@ def remove_missing_files_from_cache(method, hash_size, missing_paths):
 
     with duplicates_lock:
         missing_set = set(missing_paths)
-        duplicate_pairs.difference_update(
+        # 제너레이터를 리스트로 변환하여 set을 반복하면서 수정하는 문제 방지
+        pairs_to_remove = [
             pair for pair in duplicate_pairs
             if pair[0] in missing_set or pair[1] in missing_set
-        )
+        ]
+        duplicate_pairs.difference_update(pairs_to_remove)
 
 
 # ============================================================

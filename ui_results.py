@@ -236,12 +236,19 @@ def show_duplicate_results_window(root, lang):
             if children:
                 set_checked(parent_id, all(is_checked(child) for child in children))
 
+    def _get_group_index(item_id):
+        """태그로 저장된 saved_groups 인덱스 조회 (필터로 인한 표시 순서와 무관)"""
+        tags = tree.item(item_id, "tags")
+        if len(tags) >= 2 and tags[0] == "group":
+            return int(tags[1])
+        return tree.index(item_id)
+
     def get_checked_items():
         checked_groups = set()
         checked_files = []
         for group_id in tree.get_children():
             if is_checked(group_id):
-                checked_groups.add(tree.index(group_id))
+                checked_groups.add(_get_group_index(group_id))
             else:
                 for child_id in tree.get_children(group_id):
                     if is_checked(child_id):
@@ -304,7 +311,7 @@ def show_duplicate_results_window(root, lang):
         first_item = None
         label_suffix = " (실시간)" if live_label else ""
         for gi, group in enumerate(saved_groups, start=1):
-            parent_id = tree.insert("", "end", text=f"Group {gi}{label_suffix}", values=("☐", len(group), ""), open=True)
+            parent_id = tree.insert("", "end", text=f"Group {gi}{label_suffix}", values=("☐", len(group), ""), open=True, tags=("group", gi - 1))
             for file_path in group:
                 child_id = tree.insert(parent_id, "end", text=os.path.basename(file_path), values=("☐", "", file_path), tags=("item",), open=False)
                 if first_item is None:
@@ -402,9 +409,9 @@ def show_duplicate_results_window(root, lang):
         item_id = selected[0]
         parent_id = tree.parent(item_id)
         if parent_id:
-            group_index = tree.index(parent_id)
+            group_index = _get_group_index(parent_id)
         else:
-            group_index = tree.index(item_id)
+            group_index = _get_group_index(item_id)
         # saved_groups 범위 체크 후 미리보기
         if 0 <= group_index < len(saved_groups):
             display_preview_for_group(saved_groups[group_index])
@@ -476,6 +483,7 @@ def show_duplicate_results_window(root, lang):
             return
         changed = False
         current_groups = [list(g) for g in saved_groups]
+        # 삭제할 그룹 인덱스 저장 (표시상의 인덱스 계산 위해)
         for group_index in sorted(checked_groups, reverse=True):
             if 0 <= group_index < len(current_groups):
                 for p in current_groups[group_index]:
@@ -483,7 +491,7 @@ def show_duplicate_results_window(root, lang):
                 current_groups[group_index] = []
                 changed = True
         for file_path, group_id in checked_files:
-            group_index = tree.index(group_id)
+            group_index = _get_group_index(group_id)
             if 0 <= group_index < len(current_groups):
                 if file_path in current_groups[group_index]:
                     current_groups[group_index].remove(file_path)
@@ -492,7 +500,15 @@ def show_duplicate_results_window(root, lang):
         new_groups = [g for g in current_groups if len(g) > 1]
         if changed:
             save_duplicate_groups_json(new_groups)
+            # 트리 재구성 시 미리보기도 첫 그룹으로 갱신되므로
+            # 갱신된 목록과 미리보기를 동기화하기 위해 _populate_tree 호출
             _populate_tree(new_groups, live_label=False)
+            # _populate_tree는 display_preview_for_group(saved_groups[0])으로 미리보기를 갱신함
+            # (saved_groups가 new_groups로 업데이트되었으므로 첫 그룹 표시)
+            if new_groups:
+                display_preview_for_group(new_groups[0])
+            else:
+                display_preview_for_group([])
 
     def delete_selected_files():
         """선택된 파일을 실제로 삭제하고 복사본에서도 제거"""
