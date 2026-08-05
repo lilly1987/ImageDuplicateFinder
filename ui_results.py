@@ -375,6 +375,7 @@ def show_duplicate_results_window(root, lang):
         for child in preview_inner.winfo_children():
             child.destroy()
         preview_images = []
+        preview_canvas.yview_moveto(0)  # 스크롤 위치 초기화
 
         if not group:
             return
