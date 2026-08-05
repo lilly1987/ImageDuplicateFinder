@@ -398,7 +398,7 @@ def show_duplicate_results_window(root, lang):
 
             # 자식 항목 검사
             for child_id in child_ids:
-                path = tree.set(child_id, "path")
+                path = tree.set(child_id, "path") or ""
                 path_lower = path.lower()
                 if path:
                     group_dirs.add(os.path.dirname(path))
@@ -425,7 +425,7 @@ def show_duplicate_results_window(root, lang):
             # 2. 폴더 필터 (전체 보기 / 폴더 간 중복만 / 폴더 내 중복만)
             match_folder = True
             if folder_mode == "폴더 간 중복만":
-                match_folder = (len(group_dirs) >= 2)
+                match_folder = (len(group_dirs) > 1)
             elif folder_mode == "폴더 내 중복만":
                 match_folder = (len(group_dirs) == 1)
 
