@@ -495,132 +495,215 @@ def _run_hash_compare_pipeline(search_mode, folders, include_sub, options, metho
                     with stats_lock:
                         stats["total_hashed"] += len(batch_hashes)
                 
-                # 비교 스레드로 전달 (큐가 가득 차면 대기)
-                hash_batch_queue.put({
+                # 비교 스레드로 전달 (큐가 가득 차면 1초 단위 재시도 - 중단 반응성 확보)
+                batch_data = {
                     "paths": batch_paths,
                     "hashes": batch_hashes,
                     "batch_index": start // chunk_size,
-                })
+                }
+                while not is_stop_requested():
+                    try:
+                        hash_batch_queue.put(batch_data, timeout=1)
+                        break
+                    except queue_mod.Full:
+                        continue
                 
                 logger.info(f"[bold cyan][해시 파이프라인][/bold cyan] batch {start // chunk_size + 1} 완료: {len(batch_paths)}개 해시 → 비교 큐 전달")
         except Exception as e:
             logger.error(f"[해시 프로듀서 오류] {e}")
         finally:
-            # 종료 신호
-            hash_batch_queue.put(None)
+            # 종료 신호 (큐가 가득 차면 컨슈머가 소비할 때까지 재시도)
+            # 컨슈머는 1초마다 큐를 비우므로 최대 60초 내에 전달 보장
+            # (중단 시에는 전달 시도 없이 종료 - 컨슈머는 큐가 비고
+            #  hash_producer가 종료되면 empty_count로 자동 종료)
+            if not is_stop_requested():
+                for _ in range(60):
+                    try:
+                        hash_batch_queue.put(None, timeout=1)
+                        break
+                    except queue_mod.Full:
+                        continue
     
-    # 4. 비교 컨슈머 스레드
-    def compare_consumer():
-        """해시 배치를 가져와 BK-Tree에 추가하고 실시간 비교"""
-        try:
-            while True:
+    # 4a. 비교 워커 (단일 파일을 BK-Tree에 추가하고 기존 파일과 비교)
+    # 워커 풀에서 실행되며, 검사 후반부에도 병렬 처리로 프리징 없이 1초 단위 반응 보장
+    def _process_file_against_tree(path, h):
+        """단일 파일을 BK-Tree에 추가하고 기존 파일과 비교 (워커 스레드에서 실행)"""
+        if is_stop_requested() or h is None:
+            return
+
+        # 진행 상태 기록
+        update_processed_compare_files(method, hash_size, [path])
+
+        # BK-Tree에 추가하고 후보 찾기 (락은 query+insert 동안만 최소 유지)
+        if bktree is not None:
+            h_int = _hash_to_int(h)
+            if h_int is None:
+                return
+            with bktree_lock:
+                # tolerance 이내의 모든 파일 찾기
+                matches = bktree.query(h_int, tolerance)
+                # 새 파일을 트리에 추가
+                bktree.insert(h_int, path)
+
+            # 후보와 비교 (락 밖)
+            for matched_path, dist in matches:
                 if is_stop_requested():
                     break
-                
-                batch_data = hash_batch_queue.get(timeout=60)
-                if batch_data is None:
-                    break  # 해시 스레드 종료 신호
-                
-                batch_paths = batch_data["paths"]
-                batch_hashes = batch_data["hashes"]
-                batch_index = batch_data["batch_index"]
-                
-                # 이 배치의 파일들을 BK-Tree에 추가하고 기존 파일과 비교
-                for path in batch_paths:
+                if matched_path == path:
+                    continue
+
+                # 비교 캐시 확인
+                if use_compare_cache:
+                    cached = already_compared(path, matched_path, method, hash_size)
+                    if cached is not None:
+                        with stats_lock:
+                            stats["total_compared"] += 1
+                            if cached:
+                                stats["total_duplicates"] += 1
+                                try:
+                                    record_duplicate_pair(path, matched_path)
+                                except Exception:
+                                    pass
+                        continue
+
+                # 해상도 비율 필터링
+                if aspect_ratio_tol is not None and not _aspect_ratio_match(path, matched_path, aspect_ratio_tol):
+                    continue
+
+                # 실제 해밍 거리 계산
+                h2 = all_hashes.get(matched_path)
+                if h2 is None:
+                    continue
+
+                h1_int = _hash_str_to_int(h)
+                h2_int = _hash_str_to_int(h2)
+                if h1_int is None or h2_int is None:
+                    continue
+
+                diff = h1_int ^ h2_int
+                hamming_distance = diff.bit_count()
+                is_dup = hamming_distance <= tolerance
+
+                with stats_lock:
+                    stats["total_compared"] += 1
+                    if is_dup:
+                        stats["total_duplicates"] += 1
+                        try:
+                            record_duplicate_pair(path, matched_path)
+                        except Exception:
+                            pass
+                        # 중복 제한 확인
+                        if duplicate_limit > 0 and stats["total_duplicates"] >= duplicate_limit:
+                            logger.warning(f"[bold yellow][중단][/bold yellow] 중복 {stats['total_duplicates']:,}건 도달로 비교를 중단합니다.")
+                            request_stop()
+                            return
+
+                # 비교 결과 저장
+                if use_compare_cache:
+                    add_compare_record(path, matched_path, method, hash_size, is_dup)
+        else:
+            # BK-Tree 미사용: 기존 방식 (모든 파일과 비교)
+            with all_hashes_lock:
+                existing_paths = [p for p in all_hashes.keys() if p != path and all_hashes[p] is not None]
+
+            if existing_paths:
+                total, dups = compare_file_with_list(
+                    path, existing_paths, method, hash_size, tolerance,
+                    use_compare_cache=use_compare_cache,
+                    duplicate_limit=duplicate_limit,
+                    hashes=all_hashes,
+                    aspect_ratio_tol=aspect_ratio_tol,
+                )
+                with stats_lock:
+                    stats["total_compared"] += total
+                    stats["total_duplicates"] += dups
+
+
+    # 4b. 비교 컨슈머 스레드 (워커 풀로 병렬 처리)
+    # - 검사 후반부에도 여러 워커가 동시에 비교하여 속도 저하 방지
+    # - 1초 타임아웃 + 1초 단위 진행 로그로 UI 반응성/중단 반응성 확보
+    def compare_consumer():
+        """해시 배치를 가져와 워커 풀에 분배하여 실시간 비교"""
+        import queue as queue_mod
+        import time as time_mod
+        from concurrent.futures import ThreadPoolExecutor as TPE, wait as wait_futures, FIRST_COMPLETED
+
+        max_workers = _resolve_compare_workers()
+        last_log_time = time_mod.perf_counter()
+
+        def _safe_stats():
+            with stats_lock:
+                return stats["total_compared"], stats["total_duplicates"], stats["total_hashed"]
+
+        def _log_progress(force=False):
+            nonlocal last_log_time
+            now = time_mod.perf_counter()
+            if not force and now - last_log_time < 1.0:
+                return
+            c, d, h = _safe_stats()
+            if c == 0 and not force:
+                return
+            elapsed = now - start_time
+            logger.info(
+                f"[bold cyan][진행 상황][/bold cyan] "
+                f"비교 {c:,}회 | 중복 {d:,}건 | 해시 {h:,}개 | 경과 {elapsed:.1f}초"
+            )
+            last_log_time = now
+
+        try:
+            with TPE(max_workers=max_workers, thread_name_prefix="cmp") as executor:
+                pending_futures = set()
+                empty_count = 0
+                while True:
                     if is_stop_requested():
                         break
-                    
-                    h = batch_hashes.get(path)
-                    if h is None:
+
+                    # 배치 수신 (1초 타임아웃 - 중단 반응성 확보)
+                    try:
+                        batch_data = hash_batch_queue.get(timeout=1)
+                    except queue_mod.Empty:
+                        empty_count += 1
+                        # 해시 스레드가 종료되었고 큐가 비어있으면 종료
+                        if not hash_thread.is_alive() and empty_count >= 3:
+                            break
+                        _log_progress()
                         continue
-                    
-                    # 진행 상태 기록
-                    update_processed_compare_files(method, hash_size, [path])
-                    
-                    # BK-Tree에 추가하고 후보 찾기
-                    if bktree is not None:
-                        h_int = _hash_to_int(h)
-                        if h_int is not None:
-                            with bktree_lock:
-                                # tolerance 이내의 모든 파일 찾기
-                                matches = bktree.query(h_int, tolerance)
-                                # 새 파일을 트리에 추가
-                                bktree.insert(h_int, path)
-                            
-                            # 후보와 비교
-                            for matched_path, dist in matches:
-                                if is_stop_requested():
-                                    break
-                                if matched_path == path:
-                                    continue
-                                
-                                # 비교 캐시 확인
-                                if use_compare_cache:
-                                    cached = already_compared(path, matched_path, method, hash_size)
-                                    if cached is not None:
-                                        with stats_lock:
-                                            stats["total_compared"] += 1
-                                            if cached:
-                                                stats["total_duplicates"] += 1
-                                                try:
-                                                    record_duplicate_pair(path, matched_path)
-                                                except Exception:
-                                                    pass
-                                        continue
-                                
-                                # 해상도 비율 필터링
-                                if aspect_ratio_tol is not None and not _aspect_ratio_match(path, matched_path, aspect_ratio_tol):
-                                    continue
-                                
-                                # 실제 해밍 거리 계산
-                                h2 = all_hashes.get(matched_path)
-                                if h2 is None:
-                                    continue
-                                
-                                h1_int = _hash_str_to_int(h)
-                                h2_int = _hash_str_to_int(h2)
-                                if h1_int is None or h2_int is None:
-                                    continue
-                                
-                                diff = h1_int ^ h2_int
-                                hamming_distance = diff.bit_count()
-                                is_dup = hamming_distance <= tolerance
-                                
-                                with stats_lock:
-                                    stats["total_compared"] += 1
-                                    if is_dup:
-                                        stats["total_duplicates"] += 1
-                                        try:
-                                            record_duplicate_pair(path, matched_path)
-                                        except Exception:
-                                            pass
-                                        # 중복 제한 확인
-                                        if duplicate_limit > 0 and stats["total_duplicates"] >= duplicate_limit:
-                                            logger.warning(f"[bold yellow][중단][/bold yellow] 중복 {stats['total_duplicates']:,}건 도달로 비교를 중단합니다.")
-                                            request_stop()
-                                            break
-                                
-                                # 비교 결과 저장
-                                if use_compare_cache:
-                                    add_compare_record(path, matched_path, method, hash_size, is_dup)
-                    else:
-                        # BK-Tree 미사용: 기존 방식 (모든 파일과 비교)
-                        with all_hashes_lock:
-                            existing_paths = [p for p in all_hashes.keys() if p != path and all_hashes[p] is not None]
-                        
-                        if existing_paths:
-                            total, dups = compare_file_with_list(
-                                path, existing_paths, method, hash_size, tolerance,
-                                use_compare_cache=use_compare_cache,
-                                duplicate_limit=duplicate_limit,
-                                hashes=all_hashes,
-                                aspect_ratio_tol=aspect_ratio_tol,
-                            )
-                            with stats_lock:
-                                stats["total_compared"] += total
-                                stats["total_duplicates"] += dups
-                
-                logger.info(f"[bold cyan][비교 파이프라인][/bold cyan] batch {batch_index + 1} 비교 완료 (누적 비교: {stats['total_compared']:,}회, 중복: {stats['total_duplicates']:,}건)")
+                    empty_count = 0
+
+                    if batch_data is None:
+                        break  # 해시 스레드 종료 신호
+
+                    batch_paths = batch_data["paths"]
+                    batch_hashes = batch_data["hashes"]
+
+                    # 워커에 파일 단위 분배
+                    for path in batch_paths:
+                        if is_stop_requested():
+                            break
+                        h = batch_hashes.get(path)
+                        if h is None:
+                            continue
+                        pending_futures.add(
+                            executor.submit(_process_file_against_tree, path, h)
+                        )
+
+                    # 완료된 워커 수거 (1초 단위)
+                    done, _ = wait_futures(pending_futures, timeout=1, return_when=FIRST_COMPLETED)
+                    for fut in done:
+                        pending_futures.discard(fut)
+                        try:
+                            fut.result()
+                        except Exception:
+                            pass
+
+                    _log_progress()
+            # 남은 워커 완료 대기
+            for fut in pending_futures:
+                try:
+                    fut.result(timeout=5)
+                except Exception:
+                    pass
+            _log_progress(force=True)
         except Exception as e:
             logger.error(f"[비교 컨슈머 오류] {e}")
     
