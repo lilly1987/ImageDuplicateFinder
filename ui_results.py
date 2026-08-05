@@ -187,6 +187,9 @@ def show_duplicate_results_window(root, lang):
     detail_frame = tk.Frame(main_frame)
     detail_frame.grid(row=0, column=1, sticky="nsew")
 
+    tree_frame.grid_rowconfigure(0, weight=1)
+    tree_frame.grid_columnconfigure(0, weight=1)
+
     tree = ttk.Treeview(tree_frame, columns=("checked", "count", "path"), show="tree headings")
     tree.heading("#0", text=lang["ui"].get("group_name", "그룹"))
     tree.heading("checked", text=lang["ui"].get("check", "선택"))
@@ -196,16 +199,16 @@ def show_duplicate_results_window(root, lang):
     tree.column("checked", width=60, anchor="center", stretch=False)
     tree.column("count", width=80, anchor="center", stretch=False)
     tree.column("path", width=420, anchor="w", stretch=True)
-    tree.pack(fill="both", expand=True, side="left")
+    tree.grid(row=0, column=0, sticky="nsew")
 
     scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
     tree.configure(yscrollcommand=scrollbar.set)
-    scrollbar.pack(side="right", fill="y")
+    scrollbar.grid(row=0, column=1, sticky="ns")
 
-    # 가로 스크롤바 추가
+    # 가로 스크롤바 추가 (트리뷰 바로 아래 row=1, col=0)
     h_scrollbar = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
     tree.configure(xscrollcommand=h_scrollbar.set)
-    h_scrollbar.pack(side="bottom", fill="x")
+    h_scrollbar.grid(row=1, column=0, sticky="ew")
 
     preview_canvas = tk.Canvas(detail_frame, borderwidth=0, highlightthickness=0)
     preview_canvas.pack(fill="both", expand=True, side="left")

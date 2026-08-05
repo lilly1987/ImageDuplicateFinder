@@ -1,4 +1,4 @@
-*.yml
+config.yml
 *.pyc
 *.db
 *.db-*
@@ -6,3 +6,4 @@
 *.json
 logs/
 *.log
+list.yml
