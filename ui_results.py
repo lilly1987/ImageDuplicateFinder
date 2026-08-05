@@ -261,6 +261,11 @@ def show_duplicate_results_window(root, lang):
     preview_canvas.bind("<Configure>", _on_canvas_config)
 
     preview_images = []
+    # 미리보기 이미지 캐시: {(path, mtime, size): PIL.Image} - 재클릭 시 재사용
+    _preview_image_cache = {}
+    _preview_image_cache_lock = threading.Lock()
+    # 미리보기 세대 카운터: 빠른 연속 클릭 시 마지막 요청만 반영
+    _preview_generation = {"value": 0}
 
     # ============================================================
     # 결과창 내부 복사본 (원본과 격리)
@@ -449,6 +454,16 @@ def show_duplicate_results_window(root, lang):
         return saved_groups
 
     def display_preview_for_group(group):
+        """
+        그룹 미리보기 표시 (비동기 이미지 로드).
+
+        개선 사항:
+        - 헤더/프레임은 UI 스레드에서 즉시 생성 → 클릭 반응 즉시
+        - 이미지 디코딩/리사이즈는 백그라운드 스레드에서 수행 → UI 블로킹 없음
+        - ImageTk.PhotoImage 생성은 Tk 스레드 안전성을 위해 win.after로 UI 스레드에 위임
+        - 세대(generation) 카운터로 연속 클릭 시 마지막 요청만 반영
+        - _preview_image_cache로 같은 파일 재표시 시 즉시 로드
+        """
         nonlocal preview_images
         for child in preview_inner.winfo_children():
             child.destroy()
@@ -458,6 +473,12 @@ def show_duplicate_results_window(root, lang):
         if not group:
             return
 
+        # 새 세대 증가 (이전 백그라운드 로드 무효화)
+        _preview_generation["value"] += 1
+        generation = _preview_generation["value"]
+
+        # 각 파일의 프레임/헤더를 즉시 생성
+        frame_map = {}  # frame_id -> (frame, file_path, img_label)
         for file_path in group:
             frame = tk.Frame(preview_inner, bd=1, relief="solid", padx=4, pady=4)
             frame.pack(fill="x", pady=2, padx=2)
@@ -483,19 +504,73 @@ def show_duplicate_results_window(root, lang):
                 label.pack(fill="x")
                 continue
 
+            # 로딩 표시 먼저
+            loading_label = tk.Label(frame, text="로딩 중...", fg="gray")
+            loading_label.pack(fill="x")
+
+            img_label = tk.Label(frame)
+            frame_map[id(frame)] = (frame, file_path, img_label, loading_label)
+
+        if not frame_map:
+            return
+
+        # 백그라운드 스레드에서 이미지 디코딩/리사이즈 (UI 블로킹 방지)
+        def load_images_async():
+            # 각 프레임에 대해 PIL 이미지 준비 (디코딩 - CPU/IO 무거운 작업)
+            prepared = []  # [(frame_id, pil_image_or_None)]
+            for frame_id, (frame, file_path, img_label, loading_label) in frame_map.items():
+                if _preview_generation["value"] != generation:
+                    return  # 최신 세대 아님 - 버림
+                try:
+                    stat = os.stat(file_path)
+                    cache_key = (file_path, stat.st_mtime, stat.st_size)
+                    with _preview_image_cache_lock:
+                        pil_img = _preview_image_cache.get(cache_key)
+                    if pil_img is None:
+                        pil_img = Image.open(file_path)
+                        pil_img.thumbnail((300, 300))
+                        # PIL 이미지는 스레드 간 공유 가능, PhotoImage는 Tk 스레드에서만
+                        with _preview_image_cache_lock:
+                            # 캐시 크기 제한 (200개 초과 시 오래된 것 제거)
+                            if len(_preview_image_cache) > 200:
+                                _preview_image_cache.clear()
+                            _preview_image_cache[cache_key] = pil_img
+                except Exception:
+                    pil_img = None
+                prepared.append((frame_id, pil_img))
+
+            if _preview_generation["value"] != generation:
+                return
+
+            # UI 스레드에서 PhotoImage 생성 및 표시
+            def apply_images():
+                if _preview_generation["value"] != generation:
+                    return
+                for frame_id, pil_img in prepared:
+                    item = frame_map.get(frame_id)
+                    if item is None:
+                        continue
+                    frame, file_path, img_label, loading_label = item
+                    loading_label.destroy()
+                    try:
+                        if pil_img is None:
+                            raise Exception("load failed")
+                        photo = ImageTk.PhotoImage(pil_img)
+                        preview_images.append(photo)
+                        img_label.configure(image=photo)
+                        img_label.image = photo
+                        img_label.pack()
+                        img_label.bind("<Double-1>", lambda event, path=file_path: open_file(path))
+                        img_label.bind("<Button-3>", lambda event, path=file_path: open_folder_for_file(path))
+                    except Exception:
+                        err_label = tk.Label(frame, text=lang["ui"].get("preview_error", "미리보기를 로드할 수 없습니다."), fg="red")
+                        err_label.pack(fill="x")
             try:
-                img = Image.open(file_path)
-                img.thumbnail((300, 300))
-                photo = ImageTk.PhotoImage(img)
-                preview_images.append(photo)
-                img_label = tk.Label(frame, image=photo)
-                img_label.image = photo
-                img_label.pack()
-                img_label.bind("<Double-1>", lambda event, path=file_path: open_file(path))
-                img_label.bind("<Button-3>", lambda event, path=file_path: open_folder_for_file(path))
+                win.after(0, apply_images)
             except Exception:
-                label = tk.Label(frame, text=lang["ui"].get("preview_error", "미리보기를 로드할 수 없습니다."), fg="red")
-                label.pack(fill="x")
+                pass
+
+        threading.Thread(target=load_images_async, daemon=True).start()
 
     def show_selected_preview(event=None):
         """선택된 트리 항목의 그룹 미리보기 표시 (saved_groups 기준)"""
@@ -739,11 +814,14 @@ def show_duplicate_results_window(root, lang):
                 if not is_stop_requested():
                     groups = get_duplicate_groups()
                     if groups and len(groups) != last_group_count["value"]:
-                        # UI 스레드에서 트리 갱신
+                        # UI 스레드에서 트리 갱신 (미리보기는 첫 그룹만 갱신하지 않음)
                         def update_ui():
                             try:
                                 is_live_mode["value"] = True
-                                _populate_tree(groups, live_label=True)
+                                # 실시간 갱신 시 미리보기 유지 (사용자가 보고 있는 그룹이
+                                # 재구성으로 사라지지 않도록 _populate_tree의
+                                # display_preview_for_group 호출 방지)
+                                _live_populate_tree(groups, live_label=True)
                                 last_group_count["value"] = len(groups)
                             except Exception:
                                 pass
@@ -755,6 +833,49 @@ def show_duplicate_results_window(root, lang):
 
         # 다음 폴링 예약 (2초 간격 - UI 부하 감소)
         live_refresh_after_id["id"] = win.after(2000, refresh_live_groups)
+
+    def _live_populate_tree(groups, live_label=False):
+        """실시간 갱신용 트리 구성 - 미리보기를 강제로 갱신하지 않음"""
+        nonlocal saved_groups, all_group_tree_nodes
+        # 현재 선택된 그룹의 파일 목록 유지 (미리보기 재구성 방지)
+        selected_preview_group = None
+        selected = tree.selection()
+        if selected:
+            item_id = selected[0]
+            parent_id = tree.parent(item_id)
+            if parent_id:
+                idx = _get_group_index(parent_id)
+            else:
+                idx = _get_group_index(item_id)
+            if 0 <= idx < len(saved_groups):
+                selected_preview_group = saved_groups[idx]
+
+        saved_groups = [list(g) for g in groups] if groups else []
+        tree.delete(*tree.get_children())
+        all_group_tree_nodes.clear()
+        label_suffix = " (실시간)" if live_label else ""
+        for gi, group in enumerate(saved_groups, start=1):
+            parent_id = tree.insert("", "end", text=f"Group {gi}{label_suffix}", values=("☐", len(group), ""), open=True, tags=("group", gi - 1))
+            child_ids = []
+            for file_path in group:
+                child_id = tree.insert(parent_id, "end", text=os.path.basename(file_path), values=("☐", "", file_path), tags=("item",), open=False)
+                child_ids.append(child_id)
+            all_group_tree_nodes.append((parent_id, child_ids))
+
+        _apply_path_filter()
+        update_status_bar()
+
+        # 선택한 그룹이 여전히 존재하면 선택 유지 (미리보기 재로드 없음)
+        if selected_preview_group is not None:
+            for gi, group in enumerate(saved_groups):
+                if group == selected_preview_group:
+                    try:
+                        first_child = tree.get_children(all_group_tree_nodes[gi][0])[0]
+                        tree.selection_set(first_child)
+                        tree.focus(first_child)
+                    except Exception:
+                        pass
+                    break
 
     def stop_live_refresh():
         """실시간 갱신 중지"""

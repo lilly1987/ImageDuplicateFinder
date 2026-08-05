@@ -8,6 +8,7 @@ files = [
     "comparator.py",
     "collector.py",
     "ui_options.py",
+    "ui_results.py",
     "compare.py",
 ]
 
