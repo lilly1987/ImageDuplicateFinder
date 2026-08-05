@@ -447,7 +447,9 @@ def show_duplicate_results_window(root, lang):
         method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
         groups = load_duplicate_results_json(method, hash_size, aspect_ratio_tol, tolerance_rate)
         if groups is None:
-            messagebox.showinfo(lang["ui"].get("info", "정보"), lang["ui"].get("no_saved_results", "저장된 중복 검색 결과가 없습니다."))
+            messagebox.showinfo(lang["ui"].get("info", "정보"), lang["ui"].get("no_saved_results", "저장된 중복 검색 결과가 없습니다."), parent=win)
+            win.lift()
+            win.focus_force()
             return []
         is_live_mode["value"] = False
         _populate_tree(groups, live_label=False)
@@ -644,7 +646,9 @@ def show_duplicate_results_window(root, lang):
             method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
             remove_missing_files_from_cache(method, hash_size, missing_paths)
             save_duplicate_groups_json(new_groups)
-            messagebox.showinfo(lang["ui"].get("info", "정보"), lang["ui"].get("removed_missing", "없는 파일 목록이 제거되었습니다."))
+            messagebox.showinfo(lang["ui"].get("info", "정보"), lang["ui"].get("removed_missing", "없는 파일 목록이 제거되었습니다."), parent=win)
+            win.lift()
+            win.focus_force()
             _populate_tree(new_groups, live_label=False)
 
     def remove_selected_items():
@@ -690,8 +694,13 @@ def show_duplicate_results_window(root, lang):
             "delete_files_confirm",
             "선택한 파일을 실제로 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
         )
-        if not messagebox.askyesno(lang["ui"].get("confirm", "확인"), confirm_msg, default=messagebox.NO):
+        if not messagebox.askyesno(lang["ui"].get("confirm", "확인"), confirm_msg, parent=win, default=messagebox.NO):
+            # 사용자가 "아니오"를 선택해도 결과창에 포커스 유지
+            win.lift()
+            win.focus_force()
             return
+        win.lift()
+        win.focus_force()
         paths_to_delete = []
         for group_index in checked_groups:
             if 0 <= group_index < len(saved_groups):
@@ -712,7 +721,10 @@ def show_duplicate_results_window(root, lang):
             messagebox.showwarning(
                 lang["ui"].get("info", "정보"),
                 lang["ui"].get("delete_files_error", "일부 파일을 삭제하지 못했습니다.") + "\n" + "\n".join(failed),
+                parent=win,
             )
+            win.lift()
+            win.focus_force()
 
     def invert_selection():
         for group_id in tree.get_children():
