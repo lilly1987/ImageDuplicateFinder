@@ -74,14 +74,17 @@ def main():
     root = TkinterDnD.Tk()
     root.title("이미지 중복 탐색기 - 폴더 선택")
 
-    root.rowconfigure(0, weight=1)
-    root.rowconfigure(1, weight=0)
+    root.rowconfigure(0, weight=0)
+    root.rowconfigure(1, weight=1)
     root.rowconfigure(2, weight=0)
     root.columnconfigure(0, weight=1)
 
+    # 최상단 버튼 프레임 (기존 최하단 button_frame을 최상단으로 이동)
+    button_frame = tk.Frame(root)
+    button_frame.grid(row=0, column=0, columnspan=2, sticky="ew")
+
     folder_list = create_folder_list(root)
-    # create_folder_list가 내부에 Treeview + 스크롤바를 처리하므로
-    # 여기서 별도 스크롤바 설정은 하지 않음
+    folder_list.grid(row=1, column=0, columnspan=2, sticky="nsew")
 
     info_frame = tk.Frame(root)
     info_frame.grid(row=2, column=0, columnspan=2, sticky="w" )
@@ -123,9 +126,6 @@ def main():
     add_tooltip(refresh_cache_btn, lang["ui"].get("tooltip_cache_refresh", ""))
 
     update_cache_ui()
-
-    button_frame = tk.Frame(root)
-    button_frame.grid(row=3, column=0, columnspan=2, sticky="ew")
 
     all_apply_var = tk.BooleanVar(value=config.get("apply_depth_all", False))
     last_depth_cache = {"depth": None}

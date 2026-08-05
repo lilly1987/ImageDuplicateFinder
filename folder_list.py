@@ -21,7 +21,7 @@ def create_folder_list(root):
     반환: 컨테이너 프레임 (내부에 treeview, 필터, 선택 버튼 포함)
     """
     container = tk.Frame(root)
-    container.grid(row=0, column=0, sticky="nsew")
+    # grid 배치는 run.py에서 명시적으로 처리 (버튼을 최상단에 배치하기 위함)
 
     # ---- 상단: 선택 버튼 + 필터 ----
     top_bar = tk.Frame(container)
