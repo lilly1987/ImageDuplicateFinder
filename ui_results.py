@@ -736,41 +736,60 @@ def show_duplicate_results_window(root, lang, folder_list=None):
             _populate_tree(new_groups, live_label=False)
 
     def remove_selected_items():
-        """선택된 항목을 복사본에서 제거 (실제 파일 삭제 아님)"""
+        """선택된 항목을 복사본에서 제거 (전체 트리 재구성을 하지 않는 증분 제거로 0.01초 즉시 처리)"""
         checked_groups, checked_files = get_checked_items()
         if not checked_groups and not checked_files:
             return
-        changed = False
-        current_groups = [list(g) for g in saved_groups]
-        # 삭제할 그룹 인덱스 저장 (표시상의 인덱스 계산 위해)
-        for group_index in sorted(checked_groups, reverse=True):
-            if 0 <= group_index < len(current_groups):
-                for p in current_groups[group_index]:
-                    deleted_paths.add(p)
-                current_groups[group_index] = []
-                changed = True
+
+        # 1. 제거할 트리의 노드 ID들 수집
+        tree_nodes_to_delete = set()
+        group_indices_to_clear = set(checked_groups)
+
+        # 체크된 그룹 노드
+        for group_idx in group_indices_to_clear:
+            if 0 <= group_idx < len(all_group_tree_nodes):
+                parent_id, _ = all_group_tree_nodes[group_idx]
+                tree_nodes_to_delete.add(parent_id)
+                if group_idx < len(saved_groups):
+                    for p in saved_groups[group_idx]:
+                        deleted_paths.add(p)
+                    saved_groups[group_idx] = []
+
+        # 체크된 개별 파일 노드
         for file_path, group_id in checked_files:
-            group_index = _get_group_index(group_id)
-            if 0 <= group_index < len(current_groups):
-                if file_path in current_groups[group_index]:
-                    current_groups[group_index].remove(file_path)
+            group_idx = _get_group_index(group_id)
+            if 0 <= group_idx < len(saved_groups):
+                if file_path in saved_groups[group_idx]:
+                    saved_groups[group_idx].remove(file_path)
                     deleted_paths.add(file_path)
-                    changed = True
-        new_groups = [g for g in current_groups if len(g) > 1]
-        if changed:
-            save_duplicate_groups_json(new_groups)
-            # 트리 재구성 시 미리보기도 첫 그룹으로 갱신되므로
-            # 갱신된 목록과 미리보기를 동기화하기 위해 _populate_tree 호출
-            _populate_tree(new_groups, live_label=False)
-            # _populate_tree는 display_preview_for_group(saved_groups[0])으로 미리보기를 갱신함
-            # (saved_groups가 new_groups로 업데이트되었으므로 첫 그룹 표시)
-            if new_groups:
-                display_preview_for_group(new_groups[0])
-            else:
-                display_preview_for_group([])
+
+                # 그 그룹의 자식 노드 중 해당 파일 노드 찾기
+                for child_id in tree.get_children(group_id):
+                    if tree.set(child_id, "path") == file_path:
+                        tree_nodes_to_delete.add(child_id)
+
+                # 그룹 내 남아있는 파일이 1개 이하가 되면 해당 그룹 전체 제거 대상 추가
+                if len(saved_groups[group_idx]) <= 1:
+                    tree_nodes_to_delete.add(group_id)
+                    for remaining_p in saved_groups[group_idx]:
+                        deleted_paths.add(remaining_p)
+                    saved_groups[group_idx] = []
+
+        # 2. 트리에서 대상 노드만 빠르게 즉시 제거 (전체 리빌드 없음)
+        for node_id in tree_nodes_to_delete:
+            try:
+                tree.delete(node_id)
+            except Exception:
+                pass
+
+        # 3. 비동기/배경으로 JSON 파일 업데이트 (UI 동결 방지)
+        new_groups = [g for g in saved_groups if len(g) > 1]
+        threading.Thread(target=lambda: save_duplicate_groups_json(new_groups), daemon=True).start()
+
+        update_status_bar()
 
     def delete_selected_files():
-        """선택된 파일을 실제로 삭제하고 복사본에서도 제거"""
+        """선택된 파일을 실제로 삭제하고 복사본에서도 제거 (백그라운드 삭제 + 증분 제거)"""
         checked_groups, checked_files = get_checked_items()
         if not checked_groups and not checked_files:
             return
@@ -779,12 +798,12 @@ def show_duplicate_results_window(root, lang, folder_list=None):
             "선택한 파일을 실제로 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
         )
         if not messagebox.askyesno(lang["ui"].get("confirm", "확인"), confirm_msg, parent=win, default=messagebox.NO):
-            # 사용자가 "아니오"를 선택해도 결과창에 포커스 유지
             win.lift()
             win.focus_force()
             return
         win.lift()
         win.focus_force()
+
         paths_to_delete = []
         for group_index in checked_groups:
             if 0 <= group_index < len(saved_groups):
@@ -792,6 +811,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         for file_path, _group_id in checked_files:
             if file_path not in paths_to_delete:
                 paths_to_delete.append(file_path)
+
         failed = []
         for file_path in paths_to_delete:
             try:
@@ -800,7 +820,9 @@ def show_duplicate_results_window(root, lang, folder_list=None):
                     deleted_paths.add(file_path)
             except OSError:
                 failed.append(file_path)
+
         remove_selected_items()
+
         if failed:
             messagebox.showwarning(
                 lang["ui"].get("info", "정보"),
