@@ -14,7 +14,7 @@ from PIL import Image
 import imagehash
 from logger import logger
 from database import DB_FILE, DB_TIMEOUT, db_lock, schedule_hash_cache_write, start_db_writer, _table_name, _ensure_tables_exist
-from state import hash_memory_cache, hash_memory_lock, is_stop_requested
+from state import hash_memory_cache, hash_memory_lock, is_stop_requested, image_sizes, image_sizes_lock
 
 # 해시 계산 프로세스 풀
 hash_process_pool = None
@@ -42,9 +42,14 @@ def get_hash_process_pool():
 
 
 def compute_hash_worker(path, method, hash_size):
-    """단일 파일 해시 계산 (프로세스 풀에서 실행)"""
+    """
+    단일 파일 해시 계산 (프로세스 풀에서 실행).
+    - 반환: (hash_str, width, height) 또는 None
+    - width/height는 해상도 비율(aspect_ratio_tol) 필터링에 사용.
+    """
     try:
         img = Image.open(path)
+        width, height = img.size
         if method == "ahash":
             h = imagehash.average_hash(img, hash_size=hash_size)
         elif method == "phash":
@@ -57,7 +62,7 @@ def compute_hash_worker(path, method, hash_size):
             h = block_hash(img, hash_size=hash_size)
         else:
             return None
-        return str(h)
+        return str(h), width, height
     except Exception:
         return None
 
@@ -125,7 +130,7 @@ def get_file_hash(path, method="ahash", hash_size=8):
     future = process_pool.submit(compute_hash_worker, path, method, hash_size)
     while True:
         try:
-            hash_text = future.result(timeout=0.5)
+            result = future.result(timeout=0.5)
             break
         except TimeoutError:
             if is_stop_requested():
@@ -144,13 +149,26 @@ def get_file_hash(path, method="ahash", hash_size=8):
                 pass
             return None
 
-    if hash_text is None:
+    if result is None:
         return None
+
+    # 반환값: (hash_str, width, height)
+    if isinstance(result, tuple):
+        hash_text, width, height = result
+    else:
+        # 하위 호환: 구버전 워커 반환
+        hash_text = result
+        width, height = None, None
 
     try:
         h = imagehash.hex_to_hash(hash_text)
     except Exception:
         return None
+
+    # 이미지 크기 저장 (해상도 비율 필터링용)
+    if width and height:
+        with image_sizes_lock:
+            image_sizes[path] = (width, height)
 
     schedule_hash_cache_write(path, method, hash_size, hash_text, stat.st_mtime, stat.st_size)
     return h
@@ -302,8 +320,16 @@ def precompute_hashes(paths, method, hash_size, batch_size=1000, max_new_hashes=
                                 hash_memory_cache[(path, method, hash_size)] = None
                             hashes[path] = None
                         else:
+                            # 반환값: (hash_str, width, height)
+                            if isinstance(hash_text, tuple):
+                                hash_str_value, width, height = hash_text
+                            else:
+                                # 하위 호환: 구버전 워커 반환
+                                hash_str_value = hash_text
+                                width, height = None, None
+
                             try:
-                                h = imagehash.hex_to_hash(hash_text)
+                                h = imagehash.hex_to_hash(hash_str_value)
                             except Exception:
                                 with hash_memory_lock:
                                     hash_memory_cache[(path, method, hash_size)] = None
@@ -312,9 +338,13 @@ def precompute_hashes(paths, method, hash_size, batch_size=1000, max_new_hashes=
                                 hashes[path] = h
                                 with hash_memory_lock:
                                     hash_memory_cache[(path, method, hash_size)] = h
+                                # 이미지 크기 저장 (해상도 비율 필터링용)
+                                if width and height:
+                                    with image_sizes_lock:
+                                        image_sizes[path] = (width, height)
                                 try:
                                     stat = os.stat(path)
-                                    schedule_hash_cache_write(path, method, hash_size, hash_text, stat.st_mtime, stat.st_size)
+                                    schedule_hash_cache_write(path, method, hash_size, hash_str_value, stat.st_mtime, stat.st_size)
                                 except Exception:
                                     pass
 

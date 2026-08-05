@@ -105,13 +105,21 @@ def show_options(root, lang):
     update_hash_size_options()
 
     # --- 해상도 비율 허용 오차 ---
-    tk.Label(scrollable_frame, text=lang["ui"].get("ratio_tolerance", "해상도 비율 허용 오차 (예: 0.02)"), font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 2))
+    ratio_header = tk.Frame(scrollable_frame)
+    ratio_header.pack(anchor="w", pady=(10, 2), fill="x")
+    tk.Label(ratio_header, text=lang["ui"].get("ratio_tolerance", "해상도 비율 허용 오차 (예: 0.02)"), font=("Arial", 10, "bold")).pack(side="left")
+    use_aspect_ratio_var = tk.BooleanVar(value=config.get("use_aspect_ratio", True))
+    tk.Checkbutton(ratio_header, text=lang["ui"].get("use_check", "사용"), variable=use_aspect_ratio_var).pack(side="left", padx=(8, 0))
     ratio_var = tk.DoubleVar(value=config.get("aspect_ratio_tolerance", 0.02))
     tk.Entry(scrollable_frame, textvariable=ratio_var).pack(anchor="w")
-    tk.Label(scrollable_frame, text="이미지의 가로/세로 비율이 얼마나 달라도 같은 이미지로 볼지 결정합니다. 0.02는 2% 차이까지 허용합니다.", fg="gray", wraplength=550, justify="left").pack(anchor="w", fill="x")
+    tk.Label(scrollable_frame, text="이미지의 가로/세로 비율이 얼마나 달라도 같은 이미지로 볼지 결정합니다. 0.02는 2% 차이까지 허용합니다. 체크 해제 시 모든 비율을 허용합니다.", fg="gray", wraplength=550, justify="left").pack(anchor="w", fill="x")
 
     # --- 오차값 (정수형 해밍 거리) ---
-    tk.Label(scrollable_frame, text=lang["ui"].get("tolerance_rate", "허용 오차 (해밍 거리)"), font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 2))
+    tol_header = tk.Frame(scrollable_frame)
+    tol_header.pack(anchor="w", pady=(10, 2), fill="x")
+    tk.Label(tol_header, text=lang["ui"].get("tolerance_rate", "허용 오차 (해밍 거리)"), font=("Arial", 10, "bold")).pack(side="left")
+    use_tolerance_var = tk.BooleanVar(value=config.get("use_tolerance", True))
+    tk.Checkbutton(tol_header, text=lang["ui"].get("use_check", "사용"), variable=use_tolerance_var).pack(side="left", padx=(8, 0))
     # 기존 tolerance_rate(비율)를 정수 해밍 거리로 변환
     current_hash_size = int(size_var.get())
     current_rate = float(config.get("tolerance_rate", 0.05))
@@ -120,7 +128,7 @@ def show_options(root, lang):
     # 이미 정수로 저장된 경우 (tolerance_hamming)
     rate_var = tk.IntVar(value=config.get("tolerance_hamming", default_hamming))
     tk.Entry(scrollable_frame, textvariable=rate_var).pack(anchor="w")
-    tk.Label(scrollable_frame, text="해시 값이 몇 비트까지 달라도 중복으로 판정할지 정수로 입력합니다. (예: 0 = 완전히 같은 해시만, 2 = 비트 2개까지 허용)", fg="gray", wraplength=550, justify="left").pack(anchor="w", fill="x")
+    tk.Label(scrollable_frame, text="해시 값이 몇 비트까지 달라도 중복으로 판정할지 정수로 입력합니다. (예: 0 = 완전히 같은 해시만, 2 = 비트 2개까지 허용) 체크 해제 시 완전히 같은 해시만 중복으로 판정합니다.", fg="gray", wraplength=550, justify="left").pack(anchor="w", fill="x")
 
     # --- 중복 제한 ---
     tk.Label(scrollable_frame, text=lang["ui"].get("duplicate_limit", "중복 n건 도달시 중단"), font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 2))
@@ -192,6 +200,8 @@ def show_options(root, lang):
         config["load_saved_results_on_start"] = load_saved_var.get()
         config["auto_open_duplicate_results"] = auto_open_var.get()
         config["aspect_ratio_tolerance"] = ratio_var.get()
+        config["use_aspect_ratio"] = use_aspect_ratio_var.get()
+        config["use_tolerance"] = use_tolerance_var.get()
         save_config(config)
         win.destroy()
 

@@ -21,6 +21,7 @@ ui:
   compare_method: "비교 알고리즘"
   hash_size: "해시 크기 (값이 클수록 정밀하지만 느려짐)"
   ratio_tolerance: "해상도 비율 허용 오차 (예: 0.02)"
+  use_check: "사용"
   tolerance_rate: "허용 오차 (해밍 거리)"
   duplicate_limit: "중복 n건 도달시 중단"
   hash_batch_size: "한 번에 해시를 계산할 파일 수"

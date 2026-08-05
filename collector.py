@@ -65,7 +65,15 @@ def _resolve_compare_options(options):
     load_saved_results = bool(options.get("load_saved_results_on_start", False))
     auto_open_duplicate_results = bool(options.get("auto_open_duplicate_results", False))
     use_compare_cache = bool(options.get("use_compare_cache", True))
+    use_tolerance = bool(options.get("use_tolerance", True))
+    if not use_tolerance:
+        # 체크 해제 시 완전일치 (해밍 거리 0)
+        tolerance = 0
+    use_aspect_ratio = bool(options.get("use_aspect_ratio", True))
     aspect_ratio_tol = float(options.get("aspect_ratio_tolerance", 0.02))
+    if not use_aspect_ratio:
+        # 체크 해제 시 모든 비율 허용
+        aspect_ratio_tol = 1.0
     batch_size = int(options.get("hash_precompute_batch_size", 1000))
     max_memory_mb = options.get("max_memory_mb", 0)
     try:
@@ -393,7 +401,7 @@ def _scan_and_hash_pipeline(folders, include_sub, search_mode, method, hash_size
 # ============================================================
 # 해시-비교 동시 파이프라인 (Queue 기반)
 # ============================================================
-def _run_hash_compare_pipeline(search_mode, folders, include_sub, options, method, hash_size, tolerance, duplicate_limit, max_compare_files, max_hash_compute_files, use_compare_cache, start_time, compare_progress_log_interval=0):
+def _run_hash_compare_pipeline(search_mode, folders, include_sub, options, method, hash_size, tolerance, duplicate_limit, max_compare_files, max_hash_compute_files, use_compare_cache, start_time, compare_progress_log_interval=0, aspect_ratio_tol=None):
     """
     해시 계산과 비교를 동시에 실행하는 진정한 파이프라인.
     
@@ -413,13 +421,16 @@ def _run_hash_compare_pipeline(search_mode, folders, include_sub, options, metho
         record_duplicate_pair, compare_file_with_list,
         update_processed_compare_files, _resolve_compare_workers,
         already_compared, add_compare_record, _hash_str_to_int,
+        _aspect_ratio_match,
     )
     from bk_match import BKTree, _hash_to_int
-    from state import is_stop_requested, request_stop, duplicate_pairs, duplicates_lock
+    from state import is_stop_requested, request_stop, duplicate_pairs, duplicates_lock, image_sizes, image_sizes_lock
     from logger import logger
 
     scan_batch = options.get("scan_batch_size", 1000)
     use_bktree = options.get("use_bktree", True)
+    # aspect_ratio_tol은 _run_compare_branch에서 이미 해석된 값을 전달받음
+    # (options 원본 config에는 aspect_ratio_tol 키가 없고 aspect_ratio_tolerance만 있음)
     
     # 1. 파일 수집 (스캔만 먼저 수행 - 빠름)
     folder_files, all_target_files = _collect_files_for_mode(folders, include_sub, search_mode)
@@ -557,6 +568,10 @@ def _run_hash_compare_pipeline(search_mode, folders, include_sub, options, metho
                                                     pass
                                         continue
                                 
+                                # 해상도 비율 필터링
+                                if aspect_ratio_tol is not None and not _aspect_ratio_match(path, matched_path, aspect_ratio_tol):
+                                    continue
+                                
                                 # 실제 해밍 거리 계산
                                 h2 = all_hashes.get(matched_path)
                                 if h2 is None:
@@ -599,6 +614,7 @@ def _run_hash_compare_pipeline(search_mode, folders, include_sub, options, metho
                                 use_compare_cache=use_compare_cache,
                                 duplicate_limit=duplicate_limit,
                                 hashes=all_hashes,
+                                aspect_ratio_tol=aspect_ratio_tol,
                             )
                             with stats_lock:
                                 stats["total_compared"] += total
@@ -643,6 +659,8 @@ def _run_hash_compare_pipeline(search_mode, folders, include_sub, options, metho
 def _run_compare_branch(search_mode, folders, include_sub, options, method, hash_size, tolerance, duplicate_limit, max_compare_files, max_hash_compute_files, use_compare_cache, start_time, aspect_ratio_tol, tolerance_rate, compare_progress_log_interval=0):
     """비교 실행 분기 - 해시-비교 동시 파이프라인 사용"""
     logger.info(f"[bold cyan]{search_mode} 모드[/bold cyan]")
+    if aspect_ratio_tol is not None and aspect_ratio_tol < 1.0:
+        logger.info(f"[bold cyan][알림] 해상도 비율 허용 오차: {aspect_ratio_tol:.4f} (이미지 크기 정보가 있을 때만 적용)[/bold cyan]")
     
     total_compared, total_duplicates, total_pairs, compare_file_paths = _run_hash_compare_pipeline(
         search_mode,
@@ -658,6 +676,7 @@ def _run_compare_branch(search_mode, folders, include_sub, options, method, hash
         use_compare_cache,
         start_time,
         compare_progress_log_interval,
+        aspect_ratio_tol,
     )
 
     return total_compared, total_duplicates, total_pairs, compare_file_paths

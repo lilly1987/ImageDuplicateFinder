@@ -30,6 +30,12 @@ _compare_cache_loaded_lock = threading.Lock()
 _hash_int_cache = {}
 _hash_int_lock = threading.Lock()
 
+# 이미지 크기 캐시: {path: (width, height)}
+# - 해시 계산 시점에 얻은 이미지 크기를 저장
+# - 해상도 비율(aspect_ratio_tol) 필터링에 사용
+image_sizes = {}
+image_sizes_lock = threading.Lock()
+
 
 # ============================================================
 # 중단/재시작 제어

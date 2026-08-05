@@ -21,6 +21,7 @@ from state import (
     compare_memory_cache, compare_memory_lock,
     duplicate_pairs, duplicates_lock,
     hash_memory_cache, hash_memory_lock,
+    image_sizes, image_sizes_lock,
     is_stop_requested, request_stop,
 )
 
@@ -178,9 +179,17 @@ def build_groups(pairs):
 
 
 def get_duplicate_groups():
-    """현재 중복 그룹 목록 반환"""
+    """
+    현재 중복 그룹 목록 반환.
+    
+    lock 경합 최소화를 위해 lock 안에서는 set 복사만 수행하고
+    무거운 build_groups(연결 요소 찾기)는 lock 밖에서 실행.
+    - UI 스레드가 이 함수를 주기적으로 호출해도
+      비교 스레드의 record_duplicate_pair가 블로킹되지 않음.
+    """
     with duplicates_lock:
-        return build_groups(set(duplicate_pairs))
+        snapshot = set(duplicate_pairs)
+    return build_groups(snapshot)
 
 
 # ============================================================
@@ -519,11 +528,39 @@ def preload_compare_cache(method, hash_size, max_memory_mb=0):
     logger.info(f"[bold cyan][알림] 비교 캐시 {loaded:,}건을 메모리에 로드했습니다.[/bold cyan]")
 
 
-def compare_file_with_list(file1, file2_list, method, hash_size, tolerance, verbose=False, use_compare_cache=False, duplicate_limit=0, hashes=None):
+def _aspect_ratio_match(file1, file2, aspect_ratio_tol):
+    """
+    두 이미지의 해상도 비율(가로/세로)이 허용 오차 내인지 확인.
+    - image_sizes 캐시에 둘 다 크기가 없으면 True (모름 = 통과)
+    - aspect_ratio_tol >= 1.0 이면 모든 비율 허용 (체크 해제 상태)
+    """
+    if aspect_ratio_tol >= 1.0:
+        return True
+
+    with image_sizes_lock:
+        size1 = image_sizes.get(file1)
+        size2 = image_sizes.get(file2)
+
+    if size1 is None or size2 is None:
+        # 크기를 모르는 파일은 통과 (엄격한 필터링 방지)
+        return True
+
+    w1, h1 = size1
+    w2, h2 = size2
+    if h1 == 0 or h2 == 0:
+        return True
+
+    ratio1 = w1 / h1
+    ratio2 = w2 / h2
+    return abs(ratio1 - ratio2) / max(ratio1, ratio2) <= aspect_ratio_tol
+
+
+def compare_file_with_list(file1, file2_list, method, hash_size, tolerance, verbose=False, use_compare_cache=False, duplicate_limit=0, hashes=None, aspect_ratio_tol=None):
     """
     한 파일을 여러 파일과 비교.
     int.bit_count() 기반 해밍 거리 계산으로 빠르게 비교.
     - duplicate_limit: 중복 n건 도달 시 중단
+    - aspect_ratio_tol: 해상도 비율 허용 오차 (None이면 비율 필터링 안함)
     """
     if is_stop_requested() or not file2_list:
         return 0, 0
@@ -550,6 +587,10 @@ def compare_file_with_list(file1, file2_list, method, hash_size, tolerance, verb
 
         # 방어 코드: 사용자가 진행 중 파일을 삭제했을 수 있으므로 존재 확인
         if not os.path.isfile(file2):
+            continue
+
+        # 해상도 비율 필터링 (aspect_ratio_tol 설정 시)
+        if aspect_ratio_tol is not None and not _aspect_ratio_match(file1, file2, aspect_ratio_tol):
             continue
 
         if hashes is not None:
@@ -606,7 +647,7 @@ def compare_file_with_list(file1, file2_list, method, hash_size, tolerance, verb
 # ============================================================
 # 비교 실행
 # ============================================================
-def _run_cross_folder_compare(folder_files, new_compare_files_set, hashes, candidates, method, hash_size, tolerance, duplicate_limit, use_compare_cache, start_time, log_interval, verbose_single):
+def _run_cross_folder_compare(folder_files, new_compare_files_set, hashes, candidates, method, hash_size, tolerance, duplicate_limit, use_compare_cache, start_time, log_interval, verbose_single, aspect_ratio_tol=None):
     """cross_folder 모드 비교 실행"""
     total_compared = 0
     total_duplicates = 0
@@ -685,12 +726,12 @@ def _run_cross_folder_compare(folder_files, new_compare_files_set, hashes, candi
                         if len(batch) >= max_workers * 4:
                             filtered = filter_batch_candidates(file1, batch, candidates)
                             if filtered:
-                                futures.add(executor.submit(compare_file_with_list, file1, filtered, method, hash_size, tolerance, verbose=verbose_single, use_compare_cache=use_compare_cache, duplicate_limit=duplicate_limit, hashes=hashes))
+                                futures.add(executor.submit(compare_file_with_list, file1, filtered, method, hash_size, tolerance, verbose=verbose_single, use_compare_cache=use_compare_cache, duplicate_limit=duplicate_limit, hashes=hashes, aspect_ratio_tol=aspect_ratio_tol))
                             batch = []
                     if batch:
                         filtered = filter_batch_candidates(file1, batch, candidates)
                         if filtered:
-                            futures.add(executor.submit(compare_file_with_list, file1, filtered, method, hash_size, tolerance, verbose=verbose_single, use_compare_cache=use_compare_cache, duplicate_limit=duplicate_limit, hashes=hashes))
+                            futures.add(executor.submit(compare_file_with_list, file1, filtered, method, hash_size, tolerance, verbose=verbose_single, use_compare_cache=use_compare_cache, duplicate_limit=duplicate_limit, hashes=hashes, aspect_ratio_tol=aspect_ratio_tol))
                     if len(futures) >= max_workers * 2 and drain_futures():
                         break
                 if is_stop_requested():
@@ -707,7 +748,7 @@ def _run_cross_folder_compare(folder_files, new_compare_files_set, hashes, candi
     return total_compared, total_duplicates, total_pairs
 
 
-def _run_all_folder_compare(all_files, new_compare_files_set, hashes, candidates, method, hash_size, tolerance, duplicate_limit, use_compare_cache, start_time, log_interval, verbose_single):
+def _run_all_folder_compare(all_files, new_compare_files_set, hashes, candidates, method, hash_size, tolerance, duplicate_limit, use_compare_cache, start_time, log_interval, verbose_single, aspect_ratio_tol=None):
     """all_folders 모드 비교 실행"""
     total_compared = 0
     total_duplicates = 0
@@ -772,12 +813,12 @@ def _run_all_folder_compare(all_files, new_compare_files_set, hashes, candidates
                 if len(batch) >= max_workers * 4:
                     filtered = filter_batch_candidates(file1, batch, candidates)
                     if filtered:
-                        futures.add(executor.submit(compare_file_with_list, file1, filtered, method, hash_size, tolerance, verbose=verbose_single, use_compare_cache=use_compare_cache, duplicate_limit=duplicate_limit, hashes=hashes))
+                        futures.add(executor.submit(compare_file_with_list, file1, filtered, method, hash_size, tolerance, verbose=verbose_single, use_compare_cache=use_compare_cache, duplicate_limit=duplicate_limit, hashes=hashes, aspect_ratio_tol=aspect_ratio_tol))
                     batch = []
             if batch:
                 filtered = filter_batch_candidates(file1, batch, candidates)
                 if filtered:
-                    futures.add(executor.submit(compare_file_with_list, file1, filtered, method, hash_size, tolerance, verbose=verbose_single, use_compare_cache=use_compare_cache, duplicate_limit=duplicate_limit, hashes=hashes))
+                    futures.add(executor.submit(compare_file_with_list, file1, filtered, method, hash_size, tolerance, verbose=verbose_single, use_compare_cache=use_compare_cache, duplicate_limit=duplicate_limit, hashes=hashes, aspect_ratio_tol=aspect_ratio_tol))
             if len(futures) >= max_workers * 2 and drain_futures():
                 break
         if not is_stop_requested():
