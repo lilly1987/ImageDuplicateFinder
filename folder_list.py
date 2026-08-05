@@ -38,9 +38,18 @@ def create_folder_list(root):
 
     tk.Label(top_bar, text="필터:").pack(side="left", padx=(10, 2))
     filter_var = tk.StringVar()
-    filter_entry = tk.Entry(top_bar, textvariable=filter_var, width=40)
+    filter_entry = tk.Entry(top_bar, textvariable=filter_var, width=25)
     filter_entry.pack(side="left", padx=(0, 5))
     filter_entry.bind("<KeyRelease>", lambda e: _apply_filter(container))
+
+    # 라디오 버튼: 전체보기 / 체크만 보기 / 체크해제만 보기
+    view_mode_var = tk.StringVar(value="all")
+    rb_all = tk.Radiobutton(top_bar, text="전체보기", variable=view_mode_var, value="all", command=lambda: _apply_filter(container))
+    rb_all.pack(side="left", padx=(5, 2))
+    rb_checked = tk.Radiobutton(top_bar, text="체크만 보기", variable=view_mode_var, value="checked_only", command=lambda: _apply_filter(container))
+    rb_checked.pack(side="left", padx=(2, 2))
+    rb_unchecked = tk.Radiobutton(top_bar, text="체크해제만 보기", variable=view_mode_var, value="unchecked_only", command=lambda: _apply_filter(container))
+    rb_unchecked.pack(side="left", padx=(2, 2))
 
     # ---- 하단: 체크박스 Treeview ----
     tree_frame = tk.Frame(container)
@@ -72,6 +81,7 @@ def create_folder_list(root):
     container._tree = tree
     container._filter_var = filter_var
     container._filter_entry = filter_entry
+    container._view_mode_var = view_mode_var
     container._select_all_btn = select_all_btn
     container._deselect_all_btn = deselect_all_btn
     container._invert_btn = invert_btn
@@ -89,6 +99,10 @@ def _on_tree_click(tree, event):
         return
     current = tree.set(item_id, "checked")
     tree.set(item_id, "checked", "☐" if current == "☑" else "☑")
+    # 트리 부모인 container를 찾아 필터 재적용
+    container = tree.master.master
+    if hasattr(container, "_view_mode_var"):
+        _apply_filter(container)
     return "break"
 
 
@@ -97,6 +111,7 @@ def _set_all_checked(container, checked):
     tree = container._tree
     for item_id in tree.get_children():
         tree.set(item_id, "checked", "☑" if checked else "☐")
+    _apply_filter(container)
 
 
 def _invert_all_checked(container):
@@ -105,42 +120,47 @@ def _invert_all_checked(container):
     for item_id in tree.get_children():
         current = tree.set(item_id, "checked")
         tree.set(item_id, "checked", "☐" if current == "☑" else "☑")
+    _apply_filter(container)
 
 
 def _apply_filter(container):
     """
-    필터 입력에 따라 목록 표시/숨김.
+    필터 입력 및 체크상태 라디오버튼(전체보기, 체크만보기, 체크해제만보기)에 따라 목록 표시/숨김.
     - detach된 항목은 container._detached에 보관하여 필터 해제 시 복원.
-    - 필터는 검색 목적이므로 항목을 영구 제거하지 않음.
     """
     tree = container._tree
     keyword = container._filter_var.get().strip().lower()
+    view_mode = container._view_mode_var.get() if hasattr(container, "_view_mode_var") else "all"
 
-    # 1. 현재 표시 중인 항목 중 필터에 맞지 않는 것 숨기기
-    for item_id in tree.get_children():
-        path = tree.set(item_id, "path").lower()
-        if keyword and keyword not in path:
-            tree.detach(item_id)
-            container._detached.add(item_id)
+    all_ids = set(tree.get_children()) | set(container._detached)
 
-    # 2. 필터가 비어있으면 숨겨진 항목 모두 복원
-    if not keyword:
-        for item_id in list(container._detached):
-            try:
-                tree.reattach(item_id, "", 0)
-            except Exception:
-                pass
-        container._detached.clear()
-    else:
-        # 3. 필터가 있으면 숨겨진 항목 중 필터에 맞는 것 복원
-        for item_id in list(container._detached):
-            try:
-                path = tree.set(item_id, "path").lower()
-                if keyword in path:
+    for item_id in all_ids:
+        try:
+            path = tree.set(item_id, "path").lower()
+            is_chk = tree.set(item_id, "checked") == "☑"
+
+            # 1. 키워드 필터
+            match_keyword = not keyword or (keyword in path)
+
+            # 2. 라디오버튼 보기 모드 필터
+            match_checked = True
+            if view_mode == "checked_only":
+                match_checked = is_chk
+            elif view_mode == "unchecked_only":
+                match_checked = not is_chk
+
+            should_show = match_keyword and match_checked
+
+            if should_show:
+                if item_id in container._detached:
                     tree.reattach(item_id, "", 0)
                     container._detached.discard(item_id)
-            except Exception:
-                pass
+            else:
+                if item_id not in container._detached:
+                    tree.detach(item_id)
+                    container._detached.add(item_id)
+        except Exception:
+            pass
 
 
 def create_count_label(root, lang):

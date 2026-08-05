@@ -44,9 +44,18 @@ def show_duplicate_results_window(root, lang):
     # 파일 경로 필터 입력
     tk.Label(control_bar, text="경로 필터:").pack(side="left", padx=(5, 2))
     path_filter_var = tk.StringVar()
-    path_filter_entry = tk.Entry(control_bar, textvariable=path_filter_var, width=30)
+    path_filter_entry = tk.Entry(control_bar, textvariable=path_filter_var, width=25)
     path_filter_entry.pack(side="left", padx=(0, 5))
     path_filter_entry.bind("<KeyRelease>", lambda e: _apply_path_filter())
+
+    # 라디오 버튼: 전체그룹 / 체크 포함 그룹 / 체크 없는 그룹
+    group_view_var = tk.StringVar(value="all")
+    rb_all_groups = tk.Radiobutton(control_bar, text="전체그룹", variable=group_view_var, value="all", command=_apply_path_filter)
+    rb_all_groups.pack(side="left", padx=(5, 2))
+    rb_checked_groups = tk.Radiobutton(control_bar, text="체크 포함 그룹", variable=group_view_var, value="has_checked", command=_apply_path_filter)
+    rb_checked_groups.pack(side="left", padx=(2, 2))
+    rb_unchecked_groups = tk.Radiobutton(control_bar, text="체크 없는 그룹", variable=group_view_var, value="no_checked", command=_apply_path_filter)
+    rb_unchecked_groups.pack(side="left", padx=(2, 2))
 
     def refresh_search_list():
         """DB 테이블 + JSON 파일 + 진행 중(Live) 검색 결과 목록 조회 (건수 계산 없음)"""
@@ -359,19 +368,35 @@ def show_duplicate_results_window(root, lang):
         update_status_bar()
 
     def _apply_path_filter():
-        """파일 경로 필터 적용 (트리 항목 표시/숨김)"""
+        """파일 경로 필터 + 그룹 체크 상태 라디오버튼에 따라 트리 항목 표시/숨김"""
         keyword = path_filter_var.get().strip().lower()
+        view_mode = group_view_var.get() if "group_view_var" in dir() else "all"
+
         for group_id in tree.get_children():
             group_visible = False
+            has_checked = False
             for child_id in tree.get_children(group_id):
                 path = tree.set(child_id, "path").lower()
-                if keyword and keyword not in path:
+                is_chk = is_checked(child_id)
+                if is_chk:
+                    has_checked = True
+                # 키워드 필터
+                match_keyword = not keyword or (keyword in path)
+                if not match_keyword:
                     tree.detach(child_id)
                 else:
                     tree.reattach(child_id, group_id, 0)
                     group_visible = True
-            # 그룹에 표시할 항목이 없으면 그룹도 숨김
-            if not group_visible:
+
+            # 라디오버튼 보기 모드 필터
+            match_view = True
+            if view_mode == "has_checked":
+                match_view = has_checked
+            elif view_mode == "no_checked":
+                match_view = not has_checked
+
+            # 그룹에 표시할 항목이 없거나 보기 모드 필터에 맞지 않으면 숨김
+            if not group_visible or not match_view:
                 tree.detach(group_id)
             else:
                 tree.reattach(group_id, "", 0)
