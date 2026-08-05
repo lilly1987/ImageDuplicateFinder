@@ -21,6 +21,20 @@ from state import hash_memory_cache, hash_memory_lock, is_stop_requested, image_
 hash_process_pool = None
 _hash_worker_count = 0  # 0이면 CPU 코어 기반 자동
 
+# imagehash 라이브러리는 hash_size^2 비트 해시를 생성함.
+# 예: hash_size=64 → 4096비트(hex 1024자), 128 → 16384비트(hex 4096자), 256 → 65536비트(hex 16384자)
+# 128/256은 파일당 2KB~8KB 문자열이 되어 DB가 수십 GB로 비대해지므로 최대 64로 제한.
+MAX_HASH_SIZE = 64
+
+
+def _clamp_hash_size(hash_size):
+    """과대 해시 크기 방어: 64 초과 값은 64로 제한"""
+    try:
+        hs = int(hash_size)
+    except Exception:
+        return MAX_HASH_SIZE
+    return min(hs, MAX_HASH_SIZE)
+
 
 def set_hash_worker_count(count):
     """해시 계산 프로세스 갯수 설정 (0이면 CPU 코어 기반 자동)"""
@@ -127,12 +141,18 @@ def _compute_hash_batch(batch_paths, method, hash_size, process_pool):
     return results
 
 
+def _clamp_hash_size_for_worker(hash_size):
+    """프로세스 풀 워커에서 사용할 해시 크기 클램프 (멀티프로세싱 안전)"""
+    return _clamp_hash_size(hash_size)
+
+
 def compute_hash_worker(path, method, hash_size):
     """
     단일 파일 해시 계산 (프로세스 풀에서 실행).
     - 반환: (hash_str, width, height) 또는 None
     - width/height는 해상도 비율(aspect_ratio_tol) 필터링에 사용.
     """
+    hash_size = _clamp_hash_size_for_worker(hash_size)
     try:
         img = Image.open(path)
         width, height = img.size
@@ -159,8 +179,9 @@ def block_hash(img, hash_size=16):
     - 이미지를 hash_size x hash_size 블록으로 나누어 각 블록의 평균 밝기 계산
     - 전체 평균 밝기와 비교하여 이진 해시 생성
     - all dup 프로그램의 bhash와 유사한 방식
-    - hash_size=256 지원 (256x256 = 65536비트 해시)
+    - hash_size는 최대 64로 제한 (64x64 = 4096비트 해시)
     """
+    hash_size = _clamp_hash_size(hash_size)
     # 회색조로 변환
     img = img.convert("L")
     # hash_size x hash_size로 리사이즈
@@ -179,6 +200,7 @@ def block_hash(img, hash_size=16):
 # ============================================================
 def get_file_hash(path, method="ahash", hash_size=8):
     """파일 해시 조회 (DB 캐시 → 계산 → 메모리 캐시)"""
+    hash_size = _clamp_hash_size(hash_size)
     if not os.path.isfile(path):
         return None
     try:
@@ -267,6 +289,8 @@ def get_cached_file_hash(key):
             return hash_memory_cache[key]
 
     path, method, hash_size = key
+    hash_size = _clamp_hash_size(hash_size)
+    key = (path, method, hash_size)
     h = get_file_hash(path, method, hash_size)
 
     with hash_memory_lock:
@@ -280,6 +304,7 @@ def _query_cached_hashes(paths, method, hash_size):
     if not paths:
         return {}
 
+    hash_size = _clamp_hash_size(hash_size)
     cached = {}
     chunk_size = 200
     hash_table = _table_name("hash_cache", method, hash_size)
@@ -322,6 +347,7 @@ def precompute_hashes(paths, method, hash_size, batch_size=1000, max_new_hashes=
     - max_new_hashes: 0 초과 시 기존 계산된 건 제외하고 추가로 계산할 해시 갯수
     - previous_paths: 이전에 처리된 파일 목록 (증분 비교용)
     """
+    hash_size = _clamp_hash_size(hash_size)
     unique_paths = list(dict.fromkeys(paths))
     hashes = {}
     missing = []

@@ -66,17 +66,19 @@ def show_options(root, lang):
     # --- 해시 크기 (알고리즘별 지원 크기 - 드롭다운) ---
     tk.Label(scrollable_frame, text=lang["ui"].get("hash_size", "해시 크기 (값이 클수록 정밀하지만 느려짐)"), font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 2))
     # 알고리즘별 지원 해시 크기
+    # 주의: imagehash 라이브러리는 hash_size^2 비트 해시를 생성함 (예: 64 → 4096비트, 128 → 16384비트)
+    # 128/256은 파일당 2KB~8KB 문자열이 되어 DB가 수십 GB로 비대해지므로 64까지만 허용
     hash_size_by_method = {
-        "ahash": [8, 16, 32, 64, 128, 256],
+        "ahash": [8, 16, 32, 64],
         "phash": [8, 16, 32, 64],
-        "dhash": [8, 16, 32, 64, 128, 256],
+        "dhash": [8, 16, 32, 64],
         "whash": [8, 16, 32, 64],
-        "bhash": [8, 16, 32, 64, 128, 256],
+        "bhash": [8, 16, 32, 64],
     }
     config_method = config.get("compare_method", "ahash")
     config_hash_size = config.get("hash_size", 8)
     # config 값이 현재 알고리즘의 목록에 없으면 가장 가까운 상위 값으로 보정
-    current_options = hash_size_by_method.get(config_method, [8, 16, 32, 64, 128, 256])
+    current_options = hash_size_by_method.get(config_method, [8, 16, 32, 64])
     if config_hash_size not in current_options:
         config_hash_size = next((s for s in current_options if s >= config_hash_size), current_options[-1])
     size_var = tk.IntVar(value=config_hash_size)
@@ -88,12 +90,12 @@ def show_options(root, lang):
         width=10,
     )
     size_combo.pack(anchor="w")
-    tk.Label(scrollable_frame, text="알고리즘별로 지원하는 해시 크기가 다릅니다. 클수록 더 정밀하지만 계산 시간과 저장 공간이 늘어납니다.", fg="gray", wraplength=550, justify="left").pack(anchor="w", fill="x")
+    tk.Label(scrollable_frame, text="해시 크기는 비트 수(해시 크기^2)와 저장 공간을 결정합니다. 64 초과 값(128/256)은 파일당 2KB~8KB가 되어 DB가 수십 GB로 커지므로 권장하지 않습니다.", fg="gray", wraplength=550, justify="left").pack(anchor="w", fill="x")
 
     # 알고리즘 변경 시 해시 크기 목록 동기화
     def update_hash_size_options(*args):
         method = method_var.get()
-        options = hash_size_by_method.get(method, [8, 16, 32, 64, 128, 256])
+        options = hash_size_by_method.get(method, [8, 16, 32, 64])
         size_combo["values"] = options
         # 현재 값이 새 목록에 없으면 보정
         current = size_var.get()
