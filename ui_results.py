@@ -50,11 +50,11 @@ def show_duplicate_results_window(root, lang):
 
     # 라디오 버튼: 전체그룹 / 체크 포함 그룹 / 체크 없는 그룹
     group_view_var = tk.StringVar(value="all")
-    rb_all_groups = tk.Radiobutton(control_bar, text="전체그룹", variable=group_view_var, value="all", command=_apply_path_filter)
+    rb_all_groups = tk.Radiobutton(control_bar, text="전체그룹", variable=group_view_var, value="all", command=lambda: _apply_path_filter())
     rb_all_groups.pack(side="left", padx=(5, 2))
-    rb_checked_groups = tk.Radiobutton(control_bar, text="체크 포함 그룹", variable=group_view_var, value="has_checked", command=_apply_path_filter)
+    rb_checked_groups = tk.Radiobutton(control_bar, text="체크 포함 그룹", variable=group_view_var, value="has_checked", command=lambda: _apply_path_filter())
     rb_checked_groups.pack(side="left", padx=(2, 2))
-    rb_unchecked_groups = tk.Radiobutton(control_bar, text="체크 없는 그룹", variable=group_view_var, value="no_checked", command=_apply_path_filter)
+    rb_unchecked_groups = tk.Radiobutton(control_bar, text="체크 없는 그룹", variable=group_view_var, value="no_checked", command=lambda: _apply_path_filter())
     rb_unchecked_groups.pack(side="left", padx=(2, 2))
 
     def refresh_search_list():
