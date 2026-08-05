@@ -184,6 +184,18 @@ def show_duplicate_results_window(root, lang):
     paned.add(tree_frame, weight=1)
     paned.add(detail_frame, weight=1)
 
+    # 창이 그려진 후 분할선(sash) 위치를 정확히 1:1 (중앙)로 설정
+    def _set_initial_sash_position():
+        try:
+            win.update_idletasks()
+            total_width = paned.winfo_width()
+            if total_width > 50:
+                paned.sashpos(0, total_width // 2)
+        except Exception:
+            pass
+
+    win.after(100, _set_initial_sash_position)
+
     tree_frame.grid_rowconfigure(0, weight=1)
     tree_frame.grid_columnconfigure(0, weight=1)
 
