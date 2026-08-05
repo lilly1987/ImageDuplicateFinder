@@ -26,12 +26,13 @@ from logger import logger
 _open_windows = {}  # {창종류: Toplevel 인스턴스}
 
 
-def show_single_window(window_key, create_fn, root, lang):
+def show_single_window(window_key, create_fn, root, lang, *args, **kwargs):
     """
     종류별로 창을 최대 1개만 생성.
     이미 열려있으면 해당 창에 포커스를 주고 새로 만들지 않음.
     - window_key: 창 식별자 (예: "options", "results", "settings")
     - create_fn: 창 생성 함수 (root, lang을 인자로 받음)
+    - *args, **kwargs: create_fn에 추가로 전달할 인자
     """
     # 이미 열려있는 창이 있으면 포커스만 이동
     existing = _open_windows.get(window_key)
@@ -47,7 +48,7 @@ def show_single_window(window_key, create_fn, root, lang):
         _open_windows.pop(window_key, None)
 
     # 새 창 생성
-    win = create_fn(root, lang)
+    win = create_fn(root, lang, *args, **kwargs)
 
     # 창이 닫힐 때 _open_windows에서 제거되도록 설정
     def on_window_close():
@@ -179,7 +180,7 @@ def main():
     add_tooltip(stop_btn, lang["ui"].get("tooltip_stop", ""))
 
     results_btn = tk.Button(button_frame, text=lang["ui"].get("duplicate_results_window", "중복 결과"),
-              command=lambda: show_single_window("results", show_duplicate_results_window, root, lang))
+              command=lambda: show_single_window("results", show_duplicate_results_window, root, lang, folder_list))
     results_btn.pack(side="left")
     add_tooltip(results_btn, lang["ui"].get("tooltip_duplicate_results", ""))
 

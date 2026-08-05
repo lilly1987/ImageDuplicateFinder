@@ -3,6 +3,7 @@
 
 - 결과창은 원본 중복 결과의 복사본으로 작업 (검사 엔진과 격리)
 - 실시간 갱신 시 saved_groups 동기화
+- 폴더 선택창에서 체크 해제된 폴더의 파일은 결과에서 제외
 - 창 닫기 시 삭제/제거 내용을 원본에 반영 (JSON 저장 + DB 캐시 정리)
 """
 
@@ -26,7 +27,7 @@ from tooltip import add_tooltip
 from logger import logger
 
 
-def show_duplicate_results_window(root, lang):
+def show_duplicate_results_window(root, lang, folder_list=None):
     win = tk.Toplevel(root)
     win.title(lang["ui"].get("duplicate_results_window", "중복 결과"))
     win.geometry("1000x600")
@@ -69,6 +70,40 @@ def show_duplicate_results_window(root, lang):
     rb_checked_groups.pack(side="left", padx=(2, 2))
     rb_unchecked_groups = tk.Radiobutton(control_bar, text="체크 없는 그룹", variable=group_view_var, value="no_checked", command=lambda: _apply_path_filter())
     rb_unchecked_groups.pack(side="left", padx=(2, 2))
+
+    # ============================================================
+    # 폴더 선택창의 체크 상태 반영 필터
+    # - 폴더 선택창(folder_list)에서 체크 해제된 폴더의 파일은 결과에서 제외
+    # ============================================================
+    _folder_filter_paths = None
+    if folder_list is not None:
+        try:
+            from folder_list import get_checked_folders
+            _folder_filter_paths = set(get_checked_folders(folder_list))
+        except Exception:
+            _folder_filter_paths = None
+
+    def _is_in_checked_folder(file_path):
+        """파일이 체크된 폴더(또는 그 하위)에 속하는지 확인"""
+        if not _folder_filter_paths:
+            return True
+        file_path_lower = file_path.lower()
+        for folder in _folder_filter_paths:
+            folder_lower = folder.lower()
+            if file_path_lower == folder_lower or file_path_lower.startswith(folder_lower + os.sep) or file_path_lower.startswith(folder_lower + "/"):
+                return True
+        return False
+
+    def _filter_groups_by_folder(groups):
+        """체크 해제된 폴더의 파일을 그룹에서 제외 (그룹이 1개 이하가 되면 그룹 제외)"""
+        if not _folder_filter_paths or not groups:
+            return groups
+        result = []
+        for group in groups:
+            filtered = [p for p in group if _is_in_checked_folder(p)]
+            if len(filtered) > 1:
+                result.append(filtered)
+        return result
 
     def refresh_search_list():
         """DB 테이블 + JSON 파일 + 진행 중(Live) 검색 결과 목록 조회 (건수 계산 없음)"""
@@ -365,6 +400,8 @@ def show_duplicate_results_window(root, lang):
     def _populate_tree(groups, live_label=False):
         """트리를 groups 데이터로 채우고 saved_groups 동기화"""
         nonlocal saved_groups, all_group_tree_nodes
+        # 폴더 선택창에서 체크 해제된 폴더의 파일 제외
+        groups = _filter_groups_by_folder(groups)
         saved_groups = [list(g) for g in groups] if groups else []
         tree.delete(*tree.get_children())
         all_group_tree_nodes.clear()
@@ -849,6 +886,8 @@ def show_duplicate_results_window(root, lang):
     def _live_populate_tree(groups, live_label=False):
         """실시간 갱신용 트리 구성 - 미리보기를 강제로 갱신하지 않음"""
         nonlocal saved_groups, all_group_tree_nodes
+        # 폴더 선택창에서 체크 해제된 폴더의 파일 제외
+        groups = _filter_groups_by_folder(groups)
         # 현재 선택된 그룹의 파일 목록 유지 (미리보기 재구성 방지)
         selected_preview_group = None
         selected = tree.selection()
