@@ -10,7 +10,7 @@ import os
 from config import load_config
 from logger import logger
 from comparator import get_processed_compare_files, get_hash_prefix_bits, build_hash_buckets, collect_candidate_pairs, collect_candidate_pairs_bktree
-from hasher import precompute_hashes
+from hasher import precompute_hashes, get_hash_compute_count
 from state import is_stop_requested
 
 
@@ -470,23 +470,43 @@ def _run_hash_compare_pipeline(search_mode, folders, include_sub, options, metho
     
     # 3. 해시 프로듀서 스레드
     def hash_producer():
-        """파일을 배치 단위로 해시 계산하여 큐에 전달"""
+        """파일을 배치 단위로 해시 계산하여 큐에 전달 (max_hash_compute_files 전역 예산 적용)"""
         try:
             # 전체 파일을 배치로 나누어 해시 계산
             full_file_paths = list(all_target_files)
             chunk_size = max(1, int(scan_batch))
-            
+
             for start in range(0, len(full_file_paths), chunk_size):
                 if is_stop_requested():
                     break
-                
+
                 batch_paths = full_file_paths[start:start + chunk_size]
+
+                # 전역 해시 예산 확인: max_hash_compute_files 초과 시 남은 배치는
+                # 자동 재시도가 처리하도록 여기서 중단 (배치별 개별 적용 방지)
+                if max_hash_compute_files > 0:
+                    already_computed = get_hash_compute_count()
+                    remaining_budget = max_hash_compute_files - already_computed
+                    if remaining_budget <= 0:
+                        logger.info(
+                            f"[bold cyan][알림] 새 해시 계산 한도({max_hash_compute_files}개)에 도달하여 "
+                            f"남은 {len(full_file_paths) - start}개 파일은 다음 재시도에서 처리합니다.[/bold cyan]"
+                        )
+                        break
+                    # 이번 배치에서 처리할 파일 수를 남은 예산으로 제한
+                    budget_paths = batch_paths[:remaining_budget]
+                    # precompute_hashes의 max_new_hashes는 남은 예산 기준으로 전달
+                    batch_max_new_hashes = remaining_budget
+                else:
+                    budget_paths = batch_paths
+                    batch_max_new_hashes = 0
+
                 batch_hashes = precompute_hashes(
-                    batch_paths,
+                    budget_paths,
                     method,
                     hash_size,
                     batch_size=scan_batch,
-                    max_new_hashes=max_hash_compute_files,
+                    max_new_hashes=batch_max_new_hashes,
                 )
                 
                 # 전체 해시에 추가
@@ -497,7 +517,7 @@ def _run_hash_compare_pipeline(search_mode, folders, include_sub, options, metho
                 
                 # 해시 계산 실패(None) 파일은 재시도 대상에서 제외하기 위해 진행 상태에 기록.
                 # 이 파일들은 compare_progress에 기록되어 다음 재시도 시 신규 파일에서 제외됨.
-                failed_paths = [p for p in batch_paths if batch_hashes.get(p) is None]
+                failed_paths = [p for p in budget_paths if batch_hashes.get(p) is None]
                 if failed_paths:
                     update_processed_compare_files(method, hash_size, failed_paths)
                     logger.warning(
@@ -507,7 +527,7 @@ def _run_hash_compare_pipeline(search_mode, folders, include_sub, options, metho
                 
                 # 비교 스레드로 전달 (큐가 가득 차면 1초 단위 재시도 - 중단 반응성 확보)
                 batch_data = {
-                    "paths": batch_paths,
+                    "paths": budget_paths,
                     "hashes": batch_hashes,
                     "batch_index": start // chunk_size,
                 }
@@ -518,7 +538,7 @@ def _run_hash_compare_pipeline(search_mode, folders, include_sub, options, metho
                     except queue_mod.Full:
                         continue
                 
-                logger.info(f"[bold cyan][해시 파이프라인][/bold cyan] batch {start // chunk_size + 1} 완료: {len(batch_paths)}개 해시 → 비교 큐 전달")
+                logger.info(f"[bold cyan][해시 파이프라인][/bold cyan] batch {start // chunk_size + 1} 완료: {len(budget_paths)}개 해시 → 비교 큐 전달")
         except Exception as e:
             logger.error(f"[해시 프로듀서 오류] {e}")
         finally:

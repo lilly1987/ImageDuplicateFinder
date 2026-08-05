@@ -112,6 +112,10 @@ def _has_remaining_compare_work(stopped_early, compare_file_paths, method, hash_
     if max_hash_compute_files <= 0 or not compare_file_paths:
         return False
 
+    # hash_size 클램프 (과대 해시 방지): hasher의 DB 테이블명과 동일하게 적용
+    from hasher import _clamp_hash_size
+    hash_size = _clamp_hash_size(hash_size)
+
     # 메모리 캐시에 이미 기록된 파일(None 포함)은 "이미 처리됨"으로 간주
     with hash_memory_lock:
         not_attempted = [p for p in compare_file_paths if (p, method, hash_size) not in hash_memory_cache]
@@ -137,6 +141,9 @@ def _compare_result(total_duplicates, compare_file_paths, method, hash_size, max
 def try_compare(folder_list):
     """비교 실행 진입점"""
     reset_stop()
+    # 해시 계산 카운터 초기화 (자동 재시도 시 전역 예산이 누적되지 않도록)
+    from hasher import reset_hash_compute_count
+    reset_hash_compute_count()
     start_time = time.perf_counter()
     logger.info("[bold yellow][비교 시작][/bold yellow]")
     options = load_config()

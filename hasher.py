@@ -6,6 +6,7 @@
 
 import os
 import sqlite3
+import threading
 import time
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
@@ -26,14 +27,41 @@ _hash_worker_count = 0  # 0이면 CPU 코어 기반 자동
 # 128/256은 파일당 2KB~8KB 문자열이 되어 DB가 수십 GB로 비대해지므로 최대 64로 제한.
 MAX_HASH_SIZE = 64
 
+# 해시 계산 전역 카운터 (자동 재시도용 전역 해시 예산 관리)
+# - precompute_hashes가 실제로 계산한 파일 수(성공+실패)를 누적
+# - collector.py의 hash_producer가 max_hash_compute_files 예산 차감에 사용
+_hash_compute_count = 0
+_hash_compute_count_lock = threading.Lock()
+
+
+def get_hash_compute_count():
+    """현재까지 새로 계산된 총 해시 수 반환 (전역 해시 예산 관리용)"""
+    global _hash_compute_count
+    with _hash_compute_count_lock:
+        return _hash_compute_count
+
+
+def reset_hash_compute_count():
+    """해시 계산 카운터 초기화 (비교 시작 시 호출)"""
+    global _hash_compute_count
+    with _hash_compute_count_lock:
+        _hash_compute_count = 0
+
+
+def _increment_hash_compute_count(count=1):
+    """해시 계산 카운터 증가 (스레드 안전)"""
+    global _hash_compute_count
+    with _hash_compute_count_lock:
+        _hash_compute_count += count
+
 
 def _clamp_hash_size(hash_size):
-    """과대 해시 크기 방어: 64 초과 값은 64로 제한"""
+    """과대 해시 크기 방어: 1~64 범위로 제한 (0 이하 및 64 초과 방지)"""
     try:
         hs = int(hash_size)
     except Exception:
         return MAX_HASH_SIZE
-    return min(hs, MAX_HASH_SIZE)
+    return max(1, min(hs, MAX_HASH_SIZE))
 
 
 def set_hash_worker_count(count):
@@ -413,6 +441,8 @@ def precompute_hashes(paths, method, hash_size, batch_size=1000, max_new_hashes=
                         continue
 
                 for path in batch_paths:
+                    # 실제 해시 계산 시도 시 전역 카운트 증가 (성공+실패 모두)
+                    _increment_hash_compute_count(1)
                     hash_text = batch_results.get(path)
                     if hash_text is None:
                         with hash_memory_lock:
