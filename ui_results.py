@@ -41,10 +41,23 @@ def show_duplicate_results_window(root, lang):
     search_combo = ttk.Combobox(control_bar, textvariable=search_var, state="readonly", width=50)
     search_combo.pack(side="left", padx=(0, 10))
 
+    # 중복 폴더 유형 필터 드롭다운
+    tk.Label(control_bar, text="폴더 필터:").pack(side="left", padx=(5, 2))
+    folder_filter_var = tk.StringVar(value="전체 보기")
+    folder_filter_combo = ttk.Combobox(
+        control_bar,
+        textvariable=folder_filter_var,
+        values=["전체 보기", "폴더 간 중복만", "폴더 내 중복만"],
+        state="readonly",
+        width=14
+    )
+    folder_filter_combo.pack(side="left", padx=(0, 5))
+    folder_filter_combo.bind("<<ComboboxSelected>>", lambda e: _apply_path_filter())
+
     # 파일 경로 필터 입력
     tk.Label(control_bar, text="경로 필터:").pack(side="left", padx=(5, 2))
     path_filter_var = tk.StringVar()
-    path_filter_entry = tk.Entry(control_bar, textvariable=path_filter_var, width=25)
+    path_filter_entry = tk.Entry(control_bar, textvariable=path_filter_var, width=20)
     path_filter_entry.pack(side="left", padx=(0, 5))
     path_filter_entry.bind("<KeyRelease>", lambda e: _apply_path_filter())
 
@@ -255,6 +268,7 @@ def show_duplicate_results_window(root, lang):
     # saved_groups: 결과창에서 작업하는 복사본 (원본에 영향 없음)
     # deleted_paths: 결과창에서 삭제/제거된 파일 경로 (창 닫기 시 원본에 반영)
     saved_groups = []
+    all_group_tree_nodes = []  # [(parent_id, [child_id, ...]), ...] 구조를 보관하여 필터링 시 reattach 복원용
     deleted_paths = set()  # 실제 파일 삭제 + 목록 제거된 경로
     is_live_mode = {"value": False}  # 실시간 모드 여부
 
@@ -345,18 +359,22 @@ def show_duplicate_results_window(root, lang):
 
     def _populate_tree(groups, live_label=False):
         """트리를 groups 데이터로 채우고 saved_groups 동기화"""
-        nonlocal saved_groups
-        # 깊은 복사본으로 작업 (원본과 격리)
+        nonlocal saved_groups, all_group_tree_nodes
         saved_groups = [list(g) for g in groups] if groups else []
         tree.delete(*tree.get_children())
+        all_group_tree_nodes.clear()
         first_item = None
         label_suffix = " (실시간)" if live_label else ""
         for gi, group in enumerate(saved_groups, start=1):
             parent_id = tree.insert("", "end", text=f"Group {gi}{label_suffix}", values=("☐", len(group), ""), open=True, tags=("group", gi - 1))
+            child_ids = []
             for file_path in group:
                 child_id = tree.insert(parent_id, "end", text=os.path.basename(file_path), values=("☐", "", file_path), tags=("item",), open=False)
+                child_ids.append(child_id)
                 if first_item is None:
                     first_item = child_id
+            all_group_tree_nodes.append((parent_id, child_ids))
+
         if saved_groups:
             display_preview_for_group(saved_groups[0])
             if first_item is not None:
@@ -368,38 +386,56 @@ def show_duplicate_results_window(root, lang):
         update_status_bar()
 
     def _apply_path_filter():
-        """파일 경로 필터 + 그룹 체크 상태 라디오버튼에 따라 트리 항목 표시/숨김"""
+        """파일 경로 필터 + 폴더 모드 드롭다운 + 그룹 체크 상태 라디오버튼에 따라 트리 항목 표시/숨김"""
         keyword = path_filter_var.get().strip().lower()
         view_mode = group_view_var.get() if "group_view_var" in dir() else "all"
+        folder_mode = folder_filter_var.get() if "folder_filter_var" in dir() else "전체 보기"
 
-        for group_id in tree.get_children():
+        for group_id, child_ids in all_group_tree_nodes:
             group_visible = False
             has_checked = False
-            for child_id in tree.get_children(group_id):
-                path = tree.set(child_id, "path").lower()
+            group_dirs = set()
+
+            # 자식 항목 검사
+            for child_id in child_ids:
+                path = tree.set(child_id, "path")
+                path_lower = path.lower()
+                if path:
+                    group_dirs.add(os.path.dirname(path))
+
                 is_chk = is_checked(child_id)
                 if is_chk:
                     has_checked = True
+
                 # 키워드 필터
-                match_keyword = not keyword or (keyword in path)
+                match_keyword = not keyword or (keyword in path_lower)
                 if not match_keyword:
                     tree.detach(child_id)
                 else:
-                    tree.reattach(child_id, group_id, 0)
+                    tree.reattach(child_id, group_id, "end")
                     group_visible = True
 
-            # 라디오버튼 보기 모드 필터
+            # 1. 라디오버튼 보기 모드 필터 (체크 여부)
             match_view = True
             if view_mode == "has_checked":
                 match_view = has_checked
             elif view_mode == "no_checked":
                 match_view = not has_checked
 
-            # 그룹에 표시할 항목이 없거나 보기 모드 필터에 맞지 않으면 숨김
-            if not group_visible or not match_view:
+            # 2. 폴더 필터 (전체 보기 / 폴더 간 중복만 / 폴더 내 중복만)
+            match_folder = True
+            if folder_mode == "폴더 간 중복만":
+                match_folder = (len(group_dirs) >= 2)
+            elif folder_mode == "폴더 내 중복만":
+                match_folder = (len(group_dirs) == 1)
+
+            # 그룹에 표시할 항목이 없거나 조건에 맞지 않으면 그룹 전체 detach, 맞으면 reattach
+            if not group_visible or not match_view or not match_folder:
                 tree.detach(group_id)
             else:
-                tree.reattach(group_id, "", 0)
+                tree.reattach(group_id, "", "end")
+
+        update_status_bar()
 
     def load_results():
         """저장된 결과를 로드하여 복사본으로 작업"""
