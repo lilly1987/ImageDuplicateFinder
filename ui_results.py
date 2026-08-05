@@ -202,6 +202,11 @@ def show_duplicate_results_window(root, lang):
     tree.configure(yscrollcommand=scrollbar.set)
     scrollbar.pack(side="right", fill="y")
 
+    # 가로 스크롤바 추가
+    h_scrollbar = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+    tree.configure(xscrollcommand=h_scrollbar.set)
+    h_scrollbar.pack(side="bottom", fill="x")
+
     preview_canvas = tk.Canvas(detail_frame, borderwidth=0, highlightthickness=0)
     preview_canvas.pack(fill="both", expand=True, side="left")
 
