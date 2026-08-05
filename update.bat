@@ -2,11 +2,10 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 
+echo 📦 필요한 패키지(requirements.txt)를 설치 및 업데이트하는 중입니다...
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 
-REM 패키지 설치 (에러 무시)
-:TOP
-echo 📦 필요한 패키지를 설치하는 중입니다...
-python -m pip install tkinterdnd2 pyyaml imagehash rich
-echo ✅ 패키지 설치 완료
+echo.
+echo ✅ 필요한 모든 패키지 설치가 완료되었습니다.
 pause
-goto TOP
