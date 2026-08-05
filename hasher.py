@@ -9,6 +9,7 @@ import sqlite3
 import time
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
+from concurrent.futures.process import BrokenProcessPool
 
 from PIL import Image
 import imagehash
@@ -27,18 +28,103 @@ def set_hash_worker_count(count):
     _hash_worker_count = max(0, int(count))
 
 
+def _create_hash_process_pool():
+    """새 해시 계산 프로세스 풀 생성"""
+    if _hash_worker_count > 0:
+        max_workers = min(32, _hash_worker_count)
+    else:
+        cpu = os.cpu_count() or 4
+        # UI 스레드 반응성을 위해 최소 1코어 남김
+        max_workers = min(32, max(1, cpu - 1))
+    return ProcessPoolExecutor(max_workers=max_workers)
+
+
 def get_hash_process_pool():
-    """해시 계산 프로세스 풀 생성/반환 (UI 반응성을 위해 1코어 남김)"""
+    """해시 계산 프로세스 풀 생성/반환 (손상 시 자동 재생성)"""
     global hash_process_pool
     if hash_process_pool is None:
-        if _hash_worker_count > 0:
-            max_workers = min(32, _hash_worker_count)
-        else:
-            cpu = os.cpu_count() or 4
-            # UI 스레드 반응성을 위해 최소 1코어 남김
-            max_workers = min(32, max(1, cpu - 1))
-        hash_process_pool = ProcessPoolExecutor(max_workers=max_workers)
+        hash_process_pool = _create_hash_process_pool()
+    # 손상된 풀(BrokenProcessPool)은 재생성
+    try:
+        if getattr(hash_process_pool, "_broken", False):
+            _reset_hash_process_pool()
+    except Exception:
+        pass
     return hash_process_pool
+
+
+def _reset_hash_process_pool():
+    """손상된 프로세스 풀을 재생성하고 새 풀 반환"""
+    global hash_process_pool
+    try:
+        if hash_process_pool is not None:
+            hash_process_pool.shutdown(wait=False, cancel_futures=True)
+    except Exception:
+        pass
+    hash_process_pool = _create_hash_process_pool()
+    return hash_process_pool
+
+
+def _submit_hash_worker(process_pool, path, method, hash_size):
+    """해시 워커 제출 (풀 손상 시 재생성 후 1회 재시도)"""
+    try:
+        return process_pool.submit(compute_hash_worker, path, method, hash_size)
+    except Exception:
+        process_pool = _reset_hash_process_pool()
+        try:
+            return process_pool.submit(compute_hash_worker, path, method, hash_size)
+        except Exception:
+            return None
+
+
+def _compute_hash_batch(batch_paths, method, hash_size, process_pool):
+    """
+    배치 해시 계산 (풀 손상 시 None 반환).
+    - 반환: {path: (hash_str, width, height) 또는 None}
+    """
+    try:
+        futures = {
+            process_pool.submit(compute_hash_worker, path, method, hash_size): path
+            for path in batch_paths
+        }
+    except Exception:
+        return None  # submit 실패 (풀 손상)
+
+    pending = set(futures)
+    results = {}
+    while pending:
+        if is_stop_requested():
+            for fut in pending:
+                try:
+                    fut.cancel()
+                except Exception:
+                    pass
+            break
+
+        done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+        if not done:
+            continue
+
+        for future in done:
+            path = futures[future]
+            try:
+                hash_text = future.result()
+            except BrokenProcessPool:
+                return None  # 풀 손상 - 호출 측에서 재생성 후 재시도
+            except Exception:
+                hash_text = None
+            results[path] = hash_text
+
+        if is_stop_requested():
+            for fut in pending:
+                try:
+                    fut.cancel()
+                except Exception:
+                    pass
+            pending.clear()
+            break
+
+    return results
 
 
 def compute_hash_worker(path, method, hash_size):
@@ -290,72 +376,50 @@ def precompute_hashes(paths, method, hash_size, batch_size=1000, max_new_hashes=
 
                 chunk_start = time.perf_counter()
                 batch_paths = missing[start:start + chunk_size]
-                futures = {
-                    process_pool.submit(compute_hash_worker, path, method, hash_size): path
-                    for path in batch_paths
-                }
-                pending = set(futures)
-                while pending:
-                    if is_stop_requested():
-                        for fut in pending:
-                            try:
-                                fut.cancel()
-                            except Exception:
-                                pass
-                        break
-
-                    done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
-                    if not done:
+                # 풀 손상(BrokenProcessPool) 시 재생성 후 1회 재시도
+                batch_results = _compute_hash_batch(batch_paths, method, hash_size, process_pool)
+                if batch_results is None:
+                    logger.warning("[bold yellow][알림] 해시 프로세스 풀이 손상되어 재생성 후 재시도합니다.[/bold yellow]")
+                    process_pool = _reset_hash_process_pool()
+                    batch_results = _compute_hash_batch(batch_paths, method, hash_size, process_pool)
+                    if batch_results is None:
+                        logger.error("[bold red][오류] 해시 프로세스 풀 재생성에도 실패하여 배치를 건너뜁니다.[/bold red]")
                         continue
 
-                    for future in done:
-                        path = futures[future]
-                        try:
-                            hash_text = future.result()
-                        except Exception:
-                            hash_text = None
+                for path in batch_paths:
+                    hash_text = batch_results.get(path)
+                    if hash_text is None:
+                        with hash_memory_lock:
+                            hash_memory_cache[(path, method, hash_size)] = None
+                        hashes[path] = None
+                    else:
+                        # 반환값: (hash_str, width, height)
+                        if isinstance(hash_text, tuple):
+                            hash_str_value, width, height = hash_text
+                        else:
+                            # 하위 호환: 구버전 워커 반환
+                            hash_str_value = hash_text
+                            width, height = None, None
 
-                        if hash_text is None:
+                        try:
+                            h = imagehash.hex_to_hash(hash_str_value)
+                        except Exception:
                             with hash_memory_lock:
                                 hash_memory_cache[(path, method, hash_size)] = None
                             hashes[path] = None
                         else:
-                            # 반환값: (hash_str, width, height)
-                            if isinstance(hash_text, tuple):
-                                hash_str_value, width, height = hash_text
-                            else:
-                                # 하위 호환: 구버전 워커 반환
-                                hash_str_value = hash_text
-                                width, height = None, None
-
+                            hashes[path] = h
+                            with hash_memory_lock:
+                                hash_memory_cache[(path, method, hash_size)] = h
+                            # 이미지 크기 저장 (해상도 비율 필터링용)
+                            if width and height:
+                                with image_sizes_lock:
+                                    image_sizes[path] = (width, height)
                             try:
-                                h = imagehash.hex_to_hash(hash_str_value)
+                                stat = os.stat(path)
+                                schedule_hash_cache_write(path, method, hash_size, hash_str_value, stat.st_mtime, stat.st_size)
                             except Exception:
-                                with hash_memory_lock:
-                                    hash_memory_cache[(path, method, hash_size)] = None
-                                hashes[path] = None
-                            else:
-                                hashes[path] = h
-                                with hash_memory_lock:
-                                    hash_memory_cache[(path, method, hash_size)] = h
-                                # 이미지 크기 저장 (해상도 비율 필터링용)
-                                if width and height:
-                                    with image_sizes_lock:
-                                        image_sizes[path] = (width, height)
-                                try:
-                                    stat = os.stat(path)
-                                    schedule_hash_cache_write(path, method, hash_size, hash_str_value, stat.st_mtime, stat.st_size)
-                                except Exception:
-                                    pass
-
-                        if is_stop_requested():
-                            for fut in pending:
-                                try:
-                                    fut.cancel()
-                                except Exception:
-                                    pass
-                            pending.clear()
-                            break
+                                pass
 
                 elapsed = time.perf_counter() - chunk_start
                 logger.info(f"[bold cyan][알림] batch {start // chunk_size + 1} 완료: {len(batch_paths)}개, 소요 {elapsed:.2f}초[/bold cyan]")

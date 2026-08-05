@@ -53,12 +53,14 @@ def request_stop():
 
 
 def reset_stop():
-    """중단 상태 초기화"""
+    """
+    중단 상태 초기화.
+    
+    hash_memory_cache를 완전히 비우면 해시 계산 실패(None) 기록도 사라져
+    자동 재시도 시 실패 파일이 다시 "미시도"로 판정되어 무한 재시도가 발생.
+    따라서 캐시는 유지하되 실패(None) 기록만 보존하고 중단 상태만 초기화한다.
+    """
     stop_event.clear()
-    with hash_memory_lock:
-        hash_memory_cache.clear()
-    with compare_memory_lock:
-        compare_memory_cache.clear()
 
 
 def is_stop_requested():

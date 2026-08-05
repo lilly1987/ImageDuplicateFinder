@@ -100,14 +100,28 @@ from results import (
 # 메인 비교 진입점
 # ============================================================
 def _has_remaining_compare_work(stopped_early, compare_file_paths, method, hash_size, max_hash_compute_files):
-    """남은 비교 작업이 있는지 확인"""
+    """
+    남은 비교 작업이 있는지 확인.
+    
+    해시 계산 실패(None) 파일은 메모리 캐시에 기록되어 "이미 처리됨"으로 간주.
+    - 최초 계산 실패 파일이 아니라, 실제로 아직 해시 계산이 시도되지 않은 파일만 남은 작업으로 판정.
+    - 무한 재시도 방지: 해시 실패 파일은 DB에도 없고 메모리 캐시(None)에 있으므로 재시도 대상에서 제외.
+    """
     if stopped_early:
         return True
     if max_hash_compute_files <= 0 or not compare_file_paths:
         return False
+
+    # 메모리 캐시에 이미 기록된 파일(None 포함)은 "이미 처리됨"으로 간주
+    with hash_memory_lock:
+        not_attempted = [p for p in compare_file_paths if (p, method, hash_size) not in hash_memory_cache]
+    if not not_attempted:
+        return False
+
     from hasher import _query_cached_hashes
-    db_hashes = _query_cached_hashes(compare_file_paths, method, hash_size)
-    return any(os.path.isfile(p) and p not in db_hashes for p in compare_file_paths)
+    db_hashes = _query_cached_hashes(not_attempted, method, hash_size)
+    # DB에도 없고 아직 메모리 캐시에 없는 파일만 남은 작업
+    return any(os.path.isfile(p) and p not in db_hashes for p in not_attempted)
 
 
 def _compare_result(total_duplicates, compare_file_paths, method, hash_size, max_hash_compute_files, stopped_early=False):

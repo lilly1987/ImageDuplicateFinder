@@ -495,6 +495,16 @@ def _run_hash_compare_pipeline(search_mode, folders, include_sub, options, metho
                     with stats_lock:
                         stats["total_hashed"] += len(batch_hashes)
                 
+                # 해시 계산 실패(None) 파일은 재시도 대상에서 제외하기 위해 진행 상태에 기록.
+                # 이 파일들은 compare_progress에 기록되어 다음 재시도 시 신규 파일에서 제외됨.
+                failed_paths = [p for p in batch_paths if batch_hashes.get(p) is None]
+                if failed_paths:
+                    update_processed_compare_files(method, hash_size, failed_paths)
+                    logger.warning(
+                        f"[bold yellow][알림] 해시 계산 실패 {len(failed_paths)}개 파일을 다음 재시도에서 제외합니다."
+                        f" (예: 이미지가 아닌 파일)[/bold yellow]"
+                    )
+                
                 # 비교 스레드로 전달 (큐가 가득 차면 1초 단위 재시도 - 중단 반응성 확보)
                 batch_data = {
                     "paths": batch_paths,

@@ -176,6 +176,65 @@ def test_pipeline_no_bktree():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def test_has_remaining_after_failed_hash():
+    """
+    해시 계산 실패(None) 파일은 _has_remaining_compare_work에서
+    "남은 작업"으로 판정되지 않아야 함 (무한 재시도 방지).
+    """
+    from compare import _has_remaining_compare_work
+    from state import hash_memory_cache, hash_memory_lock, reset_stop
+
+    reset_stop()
+    tmpdir = tempfile.mkdtemp(prefix="idf_pipe_rem_")
+    try:
+        folder = os.path.join(tmpdir, "folder1")
+        os.makedirs(folder)
+        # 실제 이미지 파일이 아닌 텍스트 파일 (해시 계산 실패 유발)
+        fake_image = os.path.join(folder, "not_image.png")
+        with open(fake_image, "w", encoding="utf-8") as f:
+            f.write("this is not an image")
+
+        method, hash_size = "dhash", 16
+
+        # 파이프라인 실행 (해시 실패)
+        options = {"scan_batch_size": 5, "use_bktree": True}
+        start_time = __import__("time").perf_counter()
+        _run_hash_compare_pipeline(
+            search_mode="all_folders",
+            folders=[folder],
+            include_sub=True,
+            options=options,
+            method=method,
+            hash_size=hash_size,
+            tolerance=0,
+            duplicate_limit=0,
+            max_compare_files=0,
+            max_hash_compute_files=0,
+            use_compare_cache=False,
+            start_time=start_time,
+            compare_progress_log_interval=0,
+            aspect_ratio_tol=1.0,
+        )
+
+        # 실패 파일이 메모리 캐시에 None으로 기록되어 있어야 함
+        with hash_memory_lock:
+            recorded = hash_memory_cache.get((fake_image, method, hash_size))
+        assert recorded is None, f"실패 파일이 None 캐시에 기록되어야 함, got {recorded}"
+
+        # 해시 실패 파일은 남은 작업으로 판정되지 않아야 함
+        remaining = _has_remaining_compare_work(
+            stopped_early=False,
+            compare_file_paths=[fake_image],
+            method=method,
+            hash_size=hash_size,
+            max_hash_compute_files=5000,
+        )
+        assert remaining is False, "해시 실패 파일은 남은 작업이 아니어야 함 (무한 재시도 방지)"
+    finally:
+        reset_stop()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     test_pipeline_completes()
     print("OK: test_pipeline_completes")
@@ -183,4 +242,6 @@ if __name__ == "__main__":
     print("OK: test_pipeline_stop")
     test_pipeline_no_bktree()
     print("OK: test_pipeline_no_bktree")
-    print("RESULT: ALL OK (3 passed)")
+    test_has_remaining_after_failed_hash()
+    print("OK: test_has_remaining_after_failed_hash")
+    print("RESULT: ALL OK (4 passed)")
