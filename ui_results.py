@@ -771,12 +771,14 @@ def show_duplicate_results_window(root, lang):
         if deleted_paths:
             try:
                 method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
+                count = len(deleted_paths)
                 # DB 캐시에서 삭제된 파일 제거
                 remove_missing_files_from_cache(method, hash_size, list(deleted_paths))
                 # 수정된 그룹을 JSON에 저장
                 if saved_groups:
                     save_duplicate_groups_json([list(g) for g in saved_groups if len(g) > 1])
-                logger.info(f"[bold cyan][알림] 결과창 변경사항 반영: {len(deleted_paths)}개 파일 제거됨[/bold cyan]")
+                deleted_paths.clear()  # 중복 반영 방지를 위해 초기화
+                logger.info(f"[bold cyan][알림] 결과창 변경사항 반영: {count}개 파일 제거됨[/bold cyan]")
             except Exception as e:
                 logger.error(f"[결과창 반영 오류] {e}")
 
@@ -793,5 +795,11 @@ def show_duplicate_results_window(root, lang):
     # 실시간 갱신 시작
     refresh_live_groups()
 
+    def _on_destroy(event):
+        # 자식 위젯 파괴 이벤트로 인한 중복 호출 방지 (최상위 win 파괴 시에만 실행)
+        if event.widget == win:
+            stop_live_refresh()
+            apply_changes_on_close()
+
     # 창이 닫힐 때: 실시간 갱신 중지 + 변경사항 원본 반영
-    win.bind("<Destroy>", lambda e: (stop_live_refresh(), apply_changes_on_close()))
+    win.bind("<Destroy>", _on_destroy)
