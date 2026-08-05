@@ -76,27 +76,43 @@ def show_duplicate_results_window(root, lang, folder_list=None):
     # - 폴더 선택창(folder_list)에서 체크 해제된 폴더의 파일은 결과에서 제외
     # ============================================================
     _folder_filter_paths = None
+    _checked_folders_set = None
+    _all_folders_checked = False
+
     if folder_list is not None:
         try:
-            from folder_list import get_checked_folders
-            _folder_filter_paths = set(get_checked_folders(folder_list))
+            from folder_list import get_checked_folders, get_all_folders
+            checked = set(get_checked_folders(folder_list))
+            all_f = set(get_all_folders(folder_list))
+            if len(checked) == len(all_f) and all_f:
+                _all_folders_checked = True  # 전체 체크 상태면 필터 무시 (O(1) 통과)
+            else:
+                _folder_filter_paths = checked
+                # 빠른 조회를 위해 표준화된 경로 세트 구축
+                _checked_folders_set = {
+                    os.path.normpath(f).lower() for f in checked
+                }
         except Exception:
             _folder_filter_paths = None
 
     def _is_in_checked_folder(file_path):
-        """파일이 체크된 폴더(또는 그 하위)에 속하는지 확인"""
-        if not _folder_filter_paths:
+        """파일이 체크된 폴더(또는 그 상위/하위)에 속하는지 빠르게 확인 (부모 경로 상승 방식 - O(깊이))"""
+        if _all_folders_checked or not _checked_folders_set:
             return True
-        file_path_lower = file_path.lower()
-        for folder in _folder_filter_paths:
-            folder_lower = folder.lower()
-            if file_path_lower == folder_lower or file_path_lower.startswith(folder_lower + os.sep) or file_path_lower.startswith(folder_lower + "/"):
+        cur = os.path.normpath(file_path).lower()
+        # 부모 디렉토리로 올라가며 체크된 폴더 세트에 존재하는지 확인 (경로 깊이만큼만 반복, 최대 5~10회)
+        while True:
+            parent = os.path.dirname(cur)
+            if parent == cur:  # 루트 달성
+                break
+            if parent in _checked_folders_set:
                 return True
+            cur = parent
         return False
 
     def _filter_groups_by_folder(groups):
         """체크 해제된 폴더의 파일을 그룹에서 제외 (그룹이 1개 이하가 되면 그룹 제외)"""
-        if not _folder_filter_paths or not groups:
+        if _all_folders_checked or not _checked_folders_set or not groups:
             return groups
         result = []
         for group in groups:
@@ -397,35 +413,66 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         with open(_current_results_path(), "w", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False, indent=2)
 
+    _chunk_job_id = {"id": None}
+
+    def _cancel_chunk_job():
+        if _chunk_job_id["id"] is not None:
+            try:
+                win.after_cancel(_chunk_job_id["id"])
+            except Exception:
+                pass
+            _chunk_job_id["id"] = None
+
     def _populate_tree(groups, live_label=False):
-        """트리를 groups 데이터로 채우고 saved_groups 동기화"""
+        """트리를 groups 데이터로 채우고 saved_groups 동기화 (청크 분할 주입으로 UI 프리징 방지)"""
         nonlocal saved_groups, all_group_tree_nodes
-        # 폴더 선택창에서 체크 해제된 폴더의 파일 제외
+        _cancel_chunk_job()
         groups = _filter_groups_by_folder(groups)
         saved_groups = [list(g) for g in groups] if groups else []
         tree.delete(*tree.get_children())
         all_group_tree_nodes.clear()
-        first_item = None
-        label_suffix = " (실시간)" if live_label else ""
-        for gi, group in enumerate(saved_groups, start=1):
-            parent_id = tree.insert("", "end", text=f"Group {gi}{label_suffix}", values=("☐", len(group), ""), open=True, tags=("group", gi - 1))
-            child_ids = []
-            for file_path in group:
-                child_id = tree.insert(parent_id, "end", text=os.path.basename(file_path), values=("☐", "", file_path), tags=("item",), open=False)
-                child_ids.append(child_id)
-                if first_item is None:
-                    first_item = child_id
-            all_group_tree_nodes.append((parent_id, child_ids))
 
-        if saved_groups:
-            display_preview_for_group(saved_groups[0])
-            if first_item is not None:
-                tree.selection_set(first_item)
-                tree.focus(first_item)
-        # 필터 적용 (이미 입력된 필터가 있으면)
-        _apply_path_filter()
-        # 상태표시줄 갱신
-        update_status_bar()
+        if not saved_groups:
+            update_status_bar()
+            display_preview_for_group([])
+            return
+
+        label_suffix = " (실시간)" if live_label else ""
+        total_len = len(saved_groups)
+        chunk_size = 200  # 한 번에 200그룹씩 주입
+        first_item = [None]
+
+        def _insert_chunk(start_idx):
+            end_idx = min(start_idx + chunk_size, total_len)
+            for i in range(start_idx, end_idx):
+                group = saved_groups[i]
+                gi = i + 1
+                parent_id = tree.insert("", "end", text=f"Group {gi}{label_suffix}", values=("☐", len(group), ""), open=True, tags=("group", i))
+                child_ids = []
+                for file_path in group:
+                    child_id = tree.insert(parent_id, "end", text=os.path.basename(file_path), values=("☐", "", file_path), tags=("item",), open=False)
+                    child_ids.append(child_id)
+                    if first_item[0] is None:
+                        first_item[0] = child_id
+                all_group_tree_nodes.append((parent_id, child_ids))
+
+            # 첫 번째 청크 삽입 직후 즉시 미리보기 및 선택 설정 (초기 응답성)
+            if start_idx == 0 and saved_groups:
+                display_preview_for_group(saved_groups[0])
+                if first_item[0] is not None:
+                    tree.selection_set(first_item[0])
+                    tree.focus(first_item[0])
+
+            _apply_path_filter()
+            update_status_bar()
+
+            # 남은 청크가 있으면 다음 프레임에 예약
+            if end_idx < total_len:
+                _chunk_job_id["id"] = win.after(1, lambda: _insert_chunk(end_idx))
+            else:
+                _chunk_job_id["id"] = None
+
+        _insert_chunk(0)
 
     def _apply_path_filter():
         """파일 경로 필터 + 폴더 모드 드롭다운 + 그룹 체크 상태 라디오버튼에 따라 트리 항목 표시/숨김"""
@@ -884,11 +931,10 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         live_refresh_after_id["id"] = win.after(2000, refresh_live_groups)
 
     def _live_populate_tree(groups, live_label=False):
-        """실시간 갱신용 트리 구성 - 미리보기를 강제로 갱신하지 않음"""
+        """실시간 갱신용 트리 구성 (청크 분할 및 선택 유지)"""
         nonlocal saved_groups, all_group_tree_nodes
-        # 폴더 선택창에서 체크 해제된 폴더의 파일 제외
+        _cancel_chunk_job()
         groups = _filter_groups_by_folder(groups)
-        # 현재 선택된 그룹의 파일 목록 유지 (미리보기 재구성 방지)
         selected_preview_group = None
         selected = tree.selection()
         if selected:
@@ -904,29 +950,46 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         saved_groups = [list(g) for g in groups] if groups else []
         tree.delete(*tree.get_children())
         all_group_tree_nodes.clear()
+
+        if not saved_groups:
+            update_status_bar()
+            return
+
         label_suffix = " (실시간)" if live_label else ""
-        for gi, group in enumerate(saved_groups, start=1):
-            parent_id = tree.insert("", "end", text=f"Group {gi}{label_suffix}", values=("☐", len(group), ""), open=True, tags=("group", gi - 1))
-            child_ids = []
-            for file_path in group:
-                child_id = tree.insert(parent_id, "end", text=os.path.basename(file_path), values=("☐", "", file_path), tags=("item",), open=False)
-                child_ids.append(child_id)
-            all_group_tree_nodes.append((parent_id, child_ids))
+        total_len = len(saved_groups)
+        chunk_size = 200
 
-        _apply_path_filter()
-        update_status_bar()
+        def _insert_live_chunk(start_idx):
+            end_idx = min(start_idx + chunk_size, total_len)
+            for i in range(start_idx, end_idx):
+                group = saved_groups[i]
+                gi = i + 1
+                parent_id = tree.insert("", "end", text=f"Group {gi}{label_suffix}", values=("☐", len(group), ""), open=True, tags=("group", i))
+                child_ids = []
+                for file_path in group:
+                    child_id = tree.insert(parent_id, "end", text=os.path.basename(file_path), values=("☐", "", file_path), tags=("item",), open=False)
+                    child_ids.append(child_id)
+                all_group_tree_nodes.append((parent_id, child_ids))
 
-        # 선택한 그룹이 여전히 존재하면 선택 유지 (미리보기 재로드 없음)
-        if selected_preview_group is not None:
-            for gi, group in enumerate(saved_groups):
-                if group == selected_preview_group:
-                    try:
-                        first_child = tree.get_children(all_group_tree_nodes[gi][0])[0]
-                        tree.selection_set(first_child)
-                        tree.focus(first_child)
-                    except Exception:
-                        pass
-                    break
+            _apply_path_filter()
+            update_status_bar()
+
+            if end_idx < total_len:
+                _chunk_job_id["id"] = win.after(1, lambda: _insert_live_chunk(end_idx))
+            else:
+                _chunk_job_id["id"] = None
+                if selected_preview_group is not None:
+                    for gi, group in enumerate(saved_groups):
+                        if group == selected_preview_group:
+                            try:
+                                first_child = tree.get_children(all_group_tree_nodes[gi][0])[0]
+                                tree.selection_set(first_child)
+                                tree.focus(first_child)
+                            except Exception:
+                                pass
+                            break
+
+        _insert_live_chunk(0)
 
     def stop_live_refresh():
         """실시간 갱신 중지"""
