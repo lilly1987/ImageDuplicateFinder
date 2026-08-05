@@ -550,6 +550,20 @@ def show_duplicate_results_window(root, lang):
             for child_id in tree.get_children(group_id):
                 set_checked(child_id, not is_checked(child_id))
 
+    def select_all():
+        """모든 그룹/항목 체크"""
+        for group_id in tree.get_children():
+            set_checked(group_id, True)
+            for child_id in tree.get_children(group_id):
+                set_checked(child_id, True)
+
+    def deselect_all():
+        """모든 그룹/항목 체크 해제"""
+        for group_id in tree.get_children():
+            set_checked(group_id, False)
+            for child_id in tree.get_children(group_id):
+                set_checked(child_id, False)
+
     remove_missing_btn = tk.Button(button_bar, text=lang["ui"].get("remove_missing", "없는파일 목록에서 제거"), command=remove_missing_files)
     remove_missing_btn.pack(side="left")
     add_tooltip(remove_missing_btn, lang["ui"].get("tooltip_remove_missing", ""))
@@ -561,6 +575,14 @@ def show_duplicate_results_window(root, lang):
     delete_selected_btn = tk.Button(button_bar, text=lang["ui"].get("delete_selected_items", "선택 항목 실제 파일 삭제"), command=delete_selected_files)
     delete_selected_btn.pack(side="left")
     add_tooltip(delete_selected_btn, lang["ui"].get("tooltip_delete_selected", ""))
+
+    select_all_btn = tk.Button(button_bar, text=lang["ui"].get("select_all", "전체선택"), command=select_all)
+    select_all_btn.pack(side="left")
+    add_tooltip(select_all_btn, lang["ui"].get("tooltip_select_all", ""))
+
+    deselect_all_btn = tk.Button(button_bar, text=lang["ui"].get("deselect_all", "전체해제"), command=deselect_all)
+    deselect_all_btn.pack(side="left")
+    add_tooltip(deselect_all_btn, lang["ui"].get("tooltip_deselect_all", ""))
 
     invert_btn = tk.Button(button_bar, text=lang["ui"].get("invert_selection", "선택 항목 반전"), command=invert_selection)
     invert_btn.pack(side="left")

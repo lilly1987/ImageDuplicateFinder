@@ -43,6 +43,8 @@ REQUIRED_KEYS = {
     "delete_files_error": "Some files could not be deleted.",
     "confirm": "Confirm",
     "invert_selection": "Invert selection",
+    "select_all": "Select All",
+    "deselect_all": "Deselect All",
     "preview": "Preview",
     "missing_file": "File not found",
     "info": "Info",
@@ -74,6 +76,8 @@ REQUIRED_KEYS = {
     "tooltip_remove_selected": "Remove checked groups or items from the list (files are not deleted).",
     "tooltip_delete_selected": "Permanently delete the selected files from disk.",
     "tooltip_invert_selection": "Invert the current selection.",
+    "tooltip_select_all": "Check all groups and items.",
+    "tooltip_deselect_all": "Uncheck all groups and items.",
     "tooltip_refresh_results": "Refresh: apply deletions/removals to the original results, then reload from source.",
     "tooltip_save_options": "Save all option changes to config.yml.",
 }
