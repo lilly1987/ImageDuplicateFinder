@@ -161,6 +161,20 @@ def show_duplicate_results_window(root, lang):
     button_bar = tk.Frame(win)
     button_bar.pack(side="top", fill="x")
 
+    # 상태표시줄 추가
+    status_bar = tk.Label(win, text="그룹: 0 | 항목: 0 | 체크: 0", anchor="w", relief="sunken")
+    status_bar.pack(side="bottom", fill="x")
+
+    def update_status_bar():
+        """상태표시줄 업데이트"""
+        group_count = len(saved_groups)
+        item_count = sum(len(group) for group in saved_groups)
+        checked_count = sum(
+            1 for group_id in tree.get_children()
+            if is_checked(group_id) or any(is_checked(child_id) for child_id in tree.get_children(group_id))
+        )
+        status_bar.config(text=f"그룹: {group_count} | 항목: {item_count} | 체크: {checked_count}")
+
     main_frame = tk.Frame(win)
     main_frame.pack(fill="both", expand=True)
     main_frame.grid_rowconfigure(0, weight=1)
@@ -235,6 +249,7 @@ def show_duplicate_results_window(root, lang):
             children = tree.get_children(parent_id)
             if children:
                 set_checked(parent_id, all(is_checked(child) for child in children))
+        update_status_bar()
 
     def _get_group_index(item_id):
         """태그로 저장된 saved_groups 인덱스 조회 (필터로 인한 표시 순서와 무관)"""
@@ -323,6 +338,8 @@ def show_duplicate_results_window(root, lang):
                 tree.focus(first_item)
         # 필터 적용 (이미 입력된 필터가 있으면)
         _apply_path_filter()
+        # 상태표시줄 갱신
+        update_status_bar()
 
     def _apply_path_filter():
         """파일 경로 필터 적용 (트리 항목 표시/숨김)"""
@@ -549,6 +566,7 @@ def show_duplicate_results_window(root, lang):
             set_checked(group_id, not current_group)
             for child_id in tree.get_children(group_id):
                 set_checked(child_id, not is_checked(child_id))
+        update_status_bar()
 
     def select_all():
         """모든 그룹/항목 체크"""
@@ -556,6 +574,7 @@ def show_duplicate_results_window(root, lang):
             set_checked(group_id, True)
             for child_id in tree.get_children(group_id):
                 set_checked(child_id, True)
+        update_status_bar()
 
     def deselect_all():
         """모든 그룹/항목 체크 해제"""
@@ -563,6 +582,7 @@ def show_duplicate_results_window(root, lang):
             set_checked(group_id, False)
             for child_id in tree.get_children(group_id):
                 set_checked(child_id, False)
+        update_status_bar()
 
     remove_missing_btn = tk.Button(button_bar, text=lang["ui"].get("remove_missing", "없는파일 목록에서 제거"), command=remove_missing_files)
     remove_missing_btn.pack(side="left")
