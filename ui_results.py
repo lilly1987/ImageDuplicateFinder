@@ -580,12 +580,18 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         return saved_groups
 
     def _get_file_hash_text(file_path):
-        """현재 검색 옵션 기준 파일 해시 문자열 반환 (DB 캐시 → 계산)"""
+        """
+        현재 검색 옵션 기준 파일 해시 문자열 반환 (DB 캐시 → 계산).
+
+        - 해시를 오른쪽부터(역순) 표시: 이미지 해시는 왼쪽(MSB)이 이미지 전체
+          특성을 나타내어 유사 이미지끼리 거의 같고, 오른쪽(LSB) 끝부분이 세부
+          차이를 나타내므로 중복 비교 시 오른쪽 값이 더 유용하다.
+        """
         try:
             from hasher import get_cached_file_hash
             method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
             h = get_cached_file_hash((file_path, method, hash_size))
-            return str(h) if h else None
+            return str(h)[::-1] if h else None  # 오른쪽부터 표시
         except Exception:
             return None
 
