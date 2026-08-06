@@ -387,6 +387,18 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         "tolerance_rate": None,
     }
 
+    def _resolve_current_hash_opts():
+        """현재 표시 중인 검색 결과의 해시 옵션 반환 (None 값은 config 기본값으로 대체)"""
+        method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
+        if current_hash_opts["method"] and current_hash_opts["hash_size"]:
+            method = current_hash_opts["method"]
+            hash_size = current_hash_opts["hash_size"]
+        if current_hash_opts.get("aspect_ratio_tol") is not None:
+            aspect_ratio_tol = current_hash_opts["aspect_ratio_tol"]
+        if current_hash_opts.get("tolerance_rate") is not None:
+            tolerance_rate = current_hash_opts["tolerance_rate"]
+        return method, hash_size, aspect_ratio_tol, tolerance_rate
+
     def is_checked(item_id):
         return tree.set(item_id, "checked") == "☑"
 
@@ -456,24 +468,12 @@ def show_duplicate_results_window(root, lang, folder_list=None):
 
     def _current_results_path():
         """현재 표시 중인 검색 결과의 JSON 파일 경로"""
-        if current_hash_opts["method"] and current_hash_opts["hash_size"]:
-            method = current_hash_opts["method"]
-            hash_size = current_hash_opts["hash_size"]
-            aspect_ratio_tol = current_hash_opts.get("aspect_ratio_tol")
-            tolerance_rate = current_hash_opts.get("tolerance_rate")
-        else:
-            method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
+        method, hash_size, aspect_ratio_tol, tolerance_rate = _resolve_current_hash_opts()
         return duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance_rate)
 
     def save_duplicate_groups_json(groups):
         """복사본을 JSON 파일로 저장 (현재 표시 중인 검색 결과 기준)"""
-        if current_hash_opts["method"] and current_hash_opts["hash_size"]:
-            method = current_hash_opts["method"]
-            hash_size = current_hash_opts["hash_size"]
-            aspect_ratio_tol = current_hash_opts.get("aspect_ratio_tol")
-            tolerance_rate = current_hash_opts.get("tolerance_rate")
-        else:
-            method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
+        method, hash_size, aspect_ratio_tol, tolerance_rate = _resolve_current_hash_opts()
         data = {
             "saved_at": datetime.now().isoformat(),
             "search_options": {
@@ -492,11 +492,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         if not groups:
             return
         try:
-            if current_hash_opts["method"] and current_hash_opts["hash_size"]:
-                method = current_hash_opts["method"]
-                hash_size = current_hash_opts["hash_size"]
-            else:
-                method, hash_size, _ratio, _tol = resolve_search_options()
+            method, hash_size, _ratio, _tol = _resolve_current_hash_opts()
             from database import _table_name, db_lock
             import sqlite3
             from compare import DB_FILE
@@ -661,11 +657,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         """
         try:
             from hasher import get_cached_file_hash
-            if current_hash_opts["method"] and current_hash_opts["hash_size"]:
-                method = current_hash_opts["method"]
-                hash_size = current_hash_opts["hash_size"]
-            else:
-                method, hash_size, _ratio, _tol = resolve_search_options()
+            method, hash_size, _ratio, _tol = _resolve_current_hash_opts()
             h = get_cached_file_hash((file_path, method, hash_size))
             return str(h)[::-1] if h else None  # 오른쪽부터 표시
         except Exception:
@@ -887,11 +879,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
                 new_groups.append(remaining)
         if changed:
             # DB 캐시에서도 존재하지 않는 파일 제거 (현재 표시 중인 검색 결과 기준)
-            if current_hash_opts["method"] and current_hash_opts["hash_size"]:
-                method = current_hash_opts["method"]
-                hash_size = current_hash_opts["hash_size"]
-            else:
-                method, hash_size, _ratio, _tol = resolve_search_options()
+            method, hash_size, _ratio, _tol = _resolve_current_hash_opts()
             remove_missing_files_from_cache(method, hash_size, missing_paths)
             _save_groups_to_db(new_groups)
             save_duplicate_groups_json(new_groups)
@@ -1291,11 +1279,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         """창 닫기 시 삭제/제거된 파일을 원본 결과에 반영"""
         if deleted_paths:
             try:
-                if current_hash_opts["method"] and current_hash_opts["hash_size"]:
-                    method = current_hash_opts["method"]
-                    hash_size = current_hash_opts["hash_size"]
-                else:
-                    method, hash_size, _ratio, _tol = resolve_search_options()
+                method, hash_size, _ratio, _tol = _resolve_current_hash_opts()
                 count = len(deleted_paths)
                 # DB 캐시에서 삭제된 파일 제거
                 remove_missing_files_from_cache(method, hash_size, list(deleted_paths))
