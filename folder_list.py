@@ -107,17 +107,19 @@ def _on_tree_click(tree, event):
 
 
 def _set_all_checked(container, checked):
-    """모든 (필터링된) 항목 체크 상태 설정"""
+    """모든 항목 체크 상태 설정 (필터로 숨겨진 detach 항목 포함)"""
     tree = container._tree
-    for item_id in tree.get_children():
+    all_ids = list(tree.get_children()) + list(container._detached)
+    for item_id in all_ids:
         tree.set(item_id, "checked", "☑" if checked else "☐")
     _apply_filter(container)
 
 
 def _invert_all_checked(container):
-    """모든 (필터링된) 항목 체크 상태 반전"""
+    """모든 항목 체크 상태 반전 (필터로 숨겨진 detach 항목 포함)"""
     tree = container._tree
-    for item_id in tree.get_children():
+    all_ids = list(tree.get_children()) + list(container._detached)
+    for item_id in all_ids:
         current = tree.set(item_id, "checked")
         tree.set(item_id, "checked", "☐" if current == "☑" else "☑")
     _apply_filter(container)
@@ -204,7 +206,9 @@ def drop(event, root, folder_list, update_count, all_apply_var, last_depth_cache
 def add_with_depth(base_folder, max_depth, folder_list, update_count, lang, count_label):
     """폴더 목록에 항목 추가 (체크 상태로)"""
     tree = folder_list._tree
-    existing = {tree.set(iid, "path") for iid in tree.get_children()}
+    # 표시 중인 항목 + 필터로 숨겨진(detach된) 항목 모두 포함하여 중복 판단
+    all_ids = list(tree.get_children()) + list(getattr(folder_list, "_detached", set()))
+    existing = {tree.set(iid, "path") for iid in all_ids}
     changed = False
     for root_dir, dirs, files in os.walk(base_folder):
         rel_path = os.path.relpath(root_dir, base_folder)
@@ -219,10 +223,20 @@ def add_with_depth(base_folder, max_depth, folder_list, update_count, lang, coun
                 changed = True
     if changed:
         update_count(folder_list, lang, count_label)
+        # 새로 추가된 항목이 필터(키워드/체크 보기 모드)에 맞게 표시되도록 필터 재적용
+        _apply_filter(folder_list)
 
 
 def clear_list(folder_list, update_count, lang, count_label):
-    folder_list._tree.delete(*folder_list._tree.get_children())
+    tree = folder_list._tree
+    # 표시 중인 항목 + 필터로 숨겨진(detach된) 항목 모두 삭제
+    all_ids = list(tree.get_children()) + list(getattr(folder_list, "_detached", set()))
+    for iid in all_ids:
+        try:
+            tree.delete(iid)
+        except Exception:
+            pass
+    folder_list._detached.clear()
     update_count(folder_list, lang, count_label)
 
 
@@ -230,15 +244,21 @@ def delete_selected(event, folder_list, update_count, lang, count_label):
     tree = folder_list._tree
     selected = tree.selection()
     for iid in selected:
-        tree.delete(iid)
+        try:
+            tree.delete(iid)
+        except Exception:
+            pass
+        # 삭제된 항목이 detach 목록에 있으면 정리
+        folder_list._detached.discard(iid)
     update_count(folder_list, lang, count_label)
 
 
 def update_count(folder_list, lang, count_label=None):
-    """표시 중인 전체 항목 수 갱신"""
+    """전체 항목 수 갱신 (필터로 숨겨진 detach 항목 포함)"""
     tree = folder_list._tree
-    total = len(tree.get_children())
-    checked = sum(1 for iid in tree.get_children() if tree.set(iid, "checked") == "☑")
+    all_ids = list(tree.get_children()) + list(getattr(folder_list, "_detached", set()))
+    total = len(all_ids)
+    checked = sum(1 for iid in all_ids if tree.set(iid, "checked") == "☑")
     text = f"{lang['ui'].get('total','Total')} {total} (선택 {checked})"
     if count_label:
         count_label.config(text=text)
@@ -253,9 +273,10 @@ def get_checked_folders(folder_list):
 
 
 def get_all_folders(folder_list):
-    """표시된 모든 폴더 경로 목록 반환"""
+    """모든 폴더 경로 목록 반환 (필터로 숨겨진 detach 항목 포함)"""
     tree = folder_list._tree
-    return [tree.set(iid, "path") for iid in tree.get_children()]
+    all_ids = list(tree.get_children()) + list(getattr(folder_list, "_detached", set()))
+    return [tree.set(iid, "path") for iid in all_ids]
 
 
 def get_filtered_checked_folders(folder_list):
