@@ -226,15 +226,17 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         item = search_combo._valid_options[selected]
         source_type, method, hash_size, aspect_ratio_tol, tolerance_rate = item[1], item[2], item[3], item[4], item[5]
 
-        # 실시간(진행 중) 선택
+        # 실시간(진행 중) 선택 - 현재 검사 중인 옵션 기준
         if source_type == "live":
             groups = get_duplicate_groups()
             if groups:
                 _populate_tree(groups, live_label=True)
                 is_live_mode["value"] = True
+                current_hash_opts["method"] = None
+                current_hash_opts["hash_size"] = None
             return
 
-        # JSON 파일 선택
+        # JSON 파일 선택 - 해당 결과의 method/hash_size 기준
         if source_type == "json":
             from results import _load_groups_from_json, duplicate_results_json_path
             json_path = duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance_rate)
@@ -242,15 +244,19 @@ def show_duplicate_results_window(root, lang, folder_list=None):
             if groups:
                 _populate_tree(groups, live_label=False)
                 is_live_mode["value"] = False
+                current_hash_opts["method"] = method
+                current_hash_opts["hash_size"] = hash_size
             return
 
-        # DB 테이블 선택
+        # DB 테이블 선택 - 해당 결과의 method/hash_size 기준
         if source_type == "db":
             from comparator import load_duplicate_results_from_db
             groups = load_duplicate_results_from_db(method, hash_size)
             if groups:
                 _populate_tree(groups, live_label=False)
                 is_live_mode["value"] = False
+                current_hash_opts["method"] = method
+                current_hash_opts["hash_size"] = hash_size
 
     search_combo.bind("<<ComboboxSelected>>", on_search_selected)
 
@@ -365,6 +371,10 @@ def show_duplicate_results_window(root, lang, folder_list=None):
     is_live_mode = {"value": False}  # 실시간 모드 여부
     # 사용자가 체크 작업 중일 때 실시간 갱신을 유예하는 쿨다운 시각 (time.time() 기준)
     live_refresh_cooldown_until = {"value": 0.0}
+    # 현재 표시 중인 검색 결과의 해시 옵션 (드롭다운 선택 결과 기준)
+    # - JSON/DB 선택: 해당 결과의 method/hash_size
+    # - live/load_results: None (resolve_search_options() 사용)
+    current_hash_opts = {"method": None, "hash_size": None}
 
     def is_checked(item_id):
         return tree.set(item_id, "checked") == "☑"
@@ -576,20 +586,29 @@ def show_duplicate_results_window(root, lang, folder_list=None):
             win.focus_force()
             return []
         is_live_mode["value"] = False
+        # 현재 config 기준 결과이므로 해시 옵션 리셋 (resolve_search_options() 사용)
+        current_hash_opts["method"] = None
+        current_hash_opts["hash_size"] = None
         _populate_tree(groups, live_label=False)
         return saved_groups
 
     def _get_file_hash_text(file_path):
         """
-        현재 검색 옵션 기준 파일 해시 문자열 반환 (DB 캐시 → 계산).
+        현재 표시 중인 검색 결과의 해시 옵션 기준 파일 해시 문자열 반환.
 
+        - 드롭다운에서 선택한 검색 결과의 method/hash_size를 사용 (current_hash_opts)
+        - live/load_results(현재 config 기준)인 경우 resolve_search_options() 사용
         - 해시를 오른쪽부터(역순) 표시: 이미지 해시는 왼쪽(MSB)이 이미지 전체
           특성을 나타내어 유사 이미지끼리 거의 같고, 오른쪽(LSB) 끝부분이 세부
           차이를 나타내므로 중복 비교 시 오른쪽 값이 더 유용하다.
         """
         try:
             from hasher import get_cached_file_hash
-            method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
+            if current_hash_opts["method"] and current_hash_opts["hash_size"]:
+                method = current_hash_opts["method"]
+                hash_size = current_hash_opts["hash_size"]
+            else:
+                method, hash_size, _ratio, _tol = resolve_search_options()
             h = get_cached_file_hash((file_path, method, hash_size))
             return str(h)[::-1] if h else None  # 오른쪽부터 표시
         except Exception:
