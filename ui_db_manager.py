@@ -445,17 +445,28 @@ def show_db_manager_window(root, lang):
                 return item
         return None
 
+    def _get_selected_tables():
+        """선택된 테이블 정보 목록 반환 (다중 선택 지원)"""
+        selected = result_tree.selection()
+        if not selected:
+            return []
+        selected_set = set(selected)
+        return [item for item in _result_table_data if item["iid"] in selected_set]
+
     def _export_selected_table():
-        """선택된 중복 결과 테이블을 JSON으로 내보내기"""
-        item = _get_selected_table()
-        if item is None:
+        """선택된 중복 결과 테이블을 JSON으로 내보내기 (다중 선택 지원)"""
+        items = _get_selected_tables()
+        if not items:
             messagebox.showinfo(
                 lang["ui"].get("info", "정보"),
                 lang["ui"].get("db_select_table_first", "테이블을 선택하세요."),
                 parent=win,
             )
             return
-        data = _export_duplicate_table_to_json(item["name"])
+
+        # 첫 번째 항목은 저장 대화상자, 나머지는 같은 폴더에 자동 이름으로 저장
+        first = items[0]
+        data = _export_duplicate_table_to_json(first["name"])
         if data is None:
             messagebox.showinfo(
                 lang["ui"].get("info", "정보"),
@@ -463,7 +474,7 @@ def show_db_manager_window(root, lang):
                 parent=win,
             )
             return
-        default_name = f"duplicate_results_{item['method']}_h{item['hash_size']}_export.json"
+        default_name = f"duplicate_results_{first['method']}_h{first['hash_size']}_export.json"
         path = filedialog.asksaveasfilename(
             parent=win,
             title=lang["ui"].get("db_export_json", "JSON 내보내기"),
@@ -473,26 +484,50 @@ def show_db_manager_window(root, lang):
         )
         if not path:
             return
+        saved_dir = os.path.dirname(path)
+
+        exported_count = 0
         try:
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, ensure_ascii=False, indent=2)
-            messagebox.showinfo(
-                lang["ui"].get("info", "정보"),
-                lang["ui"].get("db_export_success", "내보내기가 완료되었습니다."),
-                parent=win,
-            )
-            logger.info(f"[bold cyan][알림] DB 결과 JSON 내보내기 완료: {path}[/bold cyan]")
+            exported_count += 1
         except Exception as e:
             messagebox.showerror(
                 lang["ui"].get("info", "정보"),
                 f"{lang['ui'].get('db_export_error', '내보내기 실패')}: {e}",
                 parent=win,
             )
+            return
+
+        # 나머지 선택 항목은 같은 폴더에 자동 이름으로 저장
+        for item in items[1:]:
+            data = _export_duplicate_table_to_json(item["name"])
+            if data is None:
+                continue
+            auto_name = f"duplicate_results_{item['method']}_h{item['hash_size']}_export.json"
+            auto_path = os.path.join(saved_dir, auto_name)
+            try:
+                with open(auto_path, "w", encoding="utf-8") as fh:
+                    json.dump(data, fh, ensure_ascii=False, indent=2)
+                exported_count += 1
+            except Exception as e:
+                messagebox.showerror(
+                    lang["ui"].get("info", "정보"),
+                    f"{lang['ui'].get('db_export_error', '내보내기 실패')}: {e}",
+                    parent=win,
+                )
+
+        messagebox.showinfo(
+            lang["ui"].get("info", "정보"),
+            lang["ui"].get("db_export_success", "내보내기가 완료되었습니다.") + f" ({exported_count}개)",
+            parent=win,
+        )
+        logger.info(f"[bold cyan][알림] DB 결과 JSON 내보내기 완료: {exported_count}개 → {saved_dir}[/bold cyan]")
 
     def _delete_selected_table():
-        """선택된 중복 결과 테이블 삭제"""
-        item = _get_selected_table()
-        if item is None:
+        """선택된 중복 결과 테이블 일괄 삭제 (다중 선택 지원)"""
+        items = _get_selected_tables()
+        if not items:
             messagebox.showinfo(
                 lang["ui"].get("info", "정보"),
                 lang["ui"].get("db_select_table_first", "테이블을 선택하세요."),
@@ -501,7 +536,7 @@ def show_db_manager_window(root, lang):
             return
         confirm = messagebox.askyesno(
             lang["ui"].get("confirm", "확인"),
-            f"{lang['ui'].get('db_delete_table_confirm', '테이블을 삭제하시겠습니까?')}\n{item['name']}",
+            f"{lang['ui'].get('db_delete_table_confirm', '테이블을 삭제하시겠습니까?')}\n" + "\n".join(it["name"] for it in items),
             parent=win,
             default=messagebox.NO,
         )
@@ -512,12 +547,13 @@ def show_db_manager_window(root, lang):
                 conn = sqlite3.connect(DB_FILE, timeout=30)
                 try:
                     cur = conn.cursor()
-                    cur.execute(f"DROP TABLE IF EXISTS {item['name']}")
+                    for it in items:
+                        cur.execute(f"DROP TABLE IF EXISTS {it['name']}")
                     conn.commit()
                 finally:
                     conn.close()
             _refresh_result_table_list()
-            logger.info(f"[bold cyan][알림] DB 테이블 삭제 완료: {item['name']}[/bold cyan]")
+            logger.info(f"[bold cyan][알림] DB 테이블 삭제 완료: {len(items)}개[/bold cyan]")
         except Exception as e:
             messagebox.showerror(
                 lang["ui"].get("info", "정보"),
@@ -668,65 +704,71 @@ def show_db_manager_window(root, lang):
             ).format(h=h_cnt, c=c_cnt, p=p_cnt, d=d_cnt)
         )
 
-    def _get_selected_hash_cache():
-        """선택된 (method, hash_size) 반환 (트리 행 값 직접 읽기)"""
+    def _get_selected_hash_cache_list():
+        """선택된 (method, hash_size) 목록 반환 (다중 선택 지원)"""
         selected = cache_tree.selection()
-        if not selected:
-            return None
-        vals = cache_tree.item(selected[0], "values")
-        if len(vals) < 2:
-            return None
-        try:
-            hash_size = int(vals[1])
-        except (ValueError, TypeError):
-            return None
-        return str(vals[0]), hash_size
+        result = []
+        for iid in selected:
+            vals = cache_tree.item(iid, "values")
+            if len(vals) < 2:
+                continue
+            try:
+                hash_size = int(vals[1])
+            except (ValueError, TypeError):
+                continue
+            result.append((str(vals[0]), hash_size))
+        return result
 
     def _delete_selected_hash_cache():
-        """선택한 알고리즘/길이의 해시 캐시 테이블 전체 삭제"""
-        meta = _get_selected_hash_cache()
-        if meta is None:
+        """선택한 알고리즘/길이의 해시 캐시 테이블 일괄 삭제 (다중 선택 지원)"""
+        metas = _get_selected_hash_cache_list()
+        if not metas:
             messagebox.showinfo(
                 lang["ui"].get("info", "정보"),
                 lang["ui"].get("db_select_cache_first", "삭제할 알고리즘/길이를 선택하세요."),
                 parent=win,
             )
             return
-        method, hash_size = meta
-        hash_t = _table_name("hash_cache", method, hash_size)
-        compare_t = _table_name("compare_cache", method, hash_size)
-        progress_t = _table_name("compare_progress", method, hash_size)
-        results_t = _table_name("duplicate_results", method, hash_size)
 
+        # 확인 대화상자에 선택된 모든 항목 표시
+        target_lines = "\n".join(f"[{m}, h{s}]" for m, s in metas)
         confirm = messagebox.askyesno(
             lang["ui"].get("confirm", "확인"),
             lang["ui"].get("db_delete_selected_hash_confirm", "선택한 알고리즘/길이의 캐시를 삭제하시겠습니까?").format(
-                method=method, hash_size=hash_size
+                method=metas[0][0], hash_size=metas[0][1]
             )
-            + f"\n[{method}, h{hash_size}]\n"
+            + "\n" + target_lines + "\n"
             + lang["ui"].get("db_delete_selected_hash_tables", "해시/비교/진행/중복 결과 테이블이 모두 삭제됩니다."),
             parent=win,
             default=messagebox.NO,
         )
         if not confirm:
             return
+
+        deleted_count = 0
         try:
             with db_lock:
                 conn = sqlite3.connect(DB_FILE, timeout=30)
                 try:
                     cur = conn.cursor()
-                    for table in (hash_t, compare_t, progress_t, results_t):
-                        cur.execute(f"DROP TABLE IF EXISTS {table}")
+                    for method, hash_size in metas:
+                        hash_t = _table_name("hash_cache", method, hash_size)
+                        compare_t = _table_name("compare_cache", method, hash_size)
+                        progress_t = _table_name("compare_progress", method, hash_size)
+                        results_t = _table_name("duplicate_results", method, hash_size)
+                        for table in (hash_t, compare_t, progress_t, results_t):
+                            cur.execute(f"DROP TABLE IF EXISTS {table}")
+                        deleted_count += 1
                     conn.commit()
                 finally:
                     conn.close()
             _refresh_cache_stats()
             messagebox.showinfo(
                 lang["ui"].get("info", "정보"),
-                lang["ui"].get("db_delete_selected_hash_done", "삭제가 완료되었습니다."),
+                lang["ui"].get("db_delete_selected_hash_done", "삭제가 완료되었습니다.") + f" ({deleted_count}개)",
                 parent=win,
             )
-            logger.info(f"[bold cyan][알림] DB 해시 캐시 삭제 완료: [{method}, h{hash_size}][/bold cyan]")
+            logger.info(f"[bold cyan][알림] DB 해시 캐시 삭제 완료: {deleted_count}개 알고리즘/길이[/bold cyan]")
         except Exception as e:
             messagebox.showerror(
                 lang["ui"].get("info", "정보"),
