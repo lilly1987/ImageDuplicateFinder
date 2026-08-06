@@ -234,6 +234,8 @@ def show_duplicate_results_window(root, lang, folder_list=None):
                 is_live_mode["value"] = True
                 current_hash_opts["method"] = None
                 current_hash_opts["hash_size"] = None
+                current_hash_opts["aspect_ratio_tol"] = None
+                current_hash_opts["tolerance_rate"] = None
             return
 
         # JSON 파일 선택 - 해당 결과의 method/hash_size 기준
@@ -246,6 +248,8 @@ def show_duplicate_results_window(root, lang, folder_list=None):
                 is_live_mode["value"] = False
                 current_hash_opts["method"] = method
                 current_hash_opts["hash_size"] = hash_size
+                current_hash_opts["aspect_ratio_tol"] = aspect_ratio_tol
+                current_hash_opts["tolerance_rate"] = tolerance_rate
             return
 
         # DB 테이블 선택 - 해당 결과의 method/hash_size 기준
@@ -257,6 +261,8 @@ def show_duplicate_results_window(root, lang, folder_list=None):
                 is_live_mode["value"] = False
                 current_hash_opts["method"] = method
                 current_hash_opts["hash_size"] = hash_size
+                current_hash_opts["aspect_ratio_tol"] = None
+                current_hash_opts["tolerance_rate"] = None
 
     search_combo.bind("<<ComboboxSelected>>", on_search_selected)
 
@@ -374,7 +380,12 @@ def show_duplicate_results_window(root, lang, folder_list=None):
     # 현재 표시 중인 검색 결과의 해시 옵션 (드롭다운 선택 결과 기준)
     # - JSON/DB 선택: 해당 결과의 method/hash_size
     # - live/load_results: None (resolve_search_options() 사용)
-    current_hash_opts = {"method": None, "hash_size": None}
+    current_hash_opts = {
+        "method": None,
+        "hash_size": None,
+        "aspect_ratio_tol": None,
+        "tolerance_rate": None,
+    }
 
     def is_checked(item_id):
         return tree.set(item_id, "checked") == "☑"
@@ -444,12 +455,25 @@ def show_duplicate_results_window(root, lang, folder_list=None):
                 open_folder_for_file(first_path)
 
     def _current_results_path():
-        method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
+        """현재 표시 중인 검색 결과의 JSON 파일 경로"""
+        if current_hash_opts["method"] and current_hash_opts["hash_size"]:
+            method = current_hash_opts["method"]
+            hash_size = current_hash_opts["hash_size"]
+            aspect_ratio_tol = current_hash_opts.get("aspect_ratio_tol")
+            tolerance_rate = current_hash_opts.get("tolerance_rate")
+        else:
+            method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
         return duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance_rate)
 
     def save_duplicate_groups_json(groups):
-        """복사본을 JSON 파일로 저장"""
-        method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
+        """복사본을 JSON 파일로 저장 (현재 표시 중인 검색 결과 기준)"""
+        if current_hash_opts["method"] and current_hash_opts["hash_size"]:
+            method = current_hash_opts["method"]
+            hash_size = current_hash_opts["hash_size"]
+            aspect_ratio_tol = current_hash_opts.get("aspect_ratio_tol")
+            tolerance_rate = current_hash_opts.get("tolerance_rate")
+        else:
+            method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
         data = {
             "saved_at": datetime.now().isoformat(),
             "search_options": {
@@ -462,6 +486,37 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         }
         with open(_current_results_path(), "w", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False, indent=2)
+
+    def _save_groups_to_db(groups):
+        """현재 표시 중인 검색 결과 기준으로 DB 중복 결과 테이블에 그룹 저장 (동기)"""
+        if not groups:
+            return
+        try:
+            if current_hash_opts["method"] and current_hash_opts["hash_size"]:
+                method = current_hash_opts["method"]
+                hash_size = current_hash_opts["hash_size"]
+            else:
+                method, hash_size, _ratio, _tol = resolve_search_options()
+            from database import _table_name, db_lock
+            import sqlite3
+            from compare import DB_FILE
+            results_table = _table_name("duplicate_results", method, hash_size)
+            with db_lock:
+                conn = sqlite3.connect(DB_FILE, timeout=30)
+                try:
+                    cur = conn.cursor()
+                    cur.execute(f"DELETE FROM {results_table}")
+                    for group_id, group in enumerate(groups):
+                        for path in sorted(group):
+                            cur.execute(
+                                f"REPLACE INTO {results_table} (group_id, path) VALUES (?,?)",
+                                (group_id, path)
+                            )
+                    conn.commit()
+                finally:
+                    conn.close()
+        except Exception:
+            pass
 
     _chunk_job_id = {"id": None}
 
@@ -589,6 +644,8 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         # 현재 config 기준 결과이므로 해시 옵션 리셋 (resolve_search_options() 사용)
         current_hash_opts["method"] = None
         current_hash_opts["hash_size"] = None
+        current_hash_opts["aspect_ratio_tol"] = None
+        current_hash_opts["tolerance_rate"] = None
         _populate_tree(groups, live_label=False)
         return saved_groups
 
@@ -829,9 +886,14 @@ def show_duplicate_results_window(root, lang, folder_list=None):
             if len(remaining) > 1:
                 new_groups.append(remaining)
         if changed:
-            # DB 캐시에서도 존재하지 않는 파일 제거
-            method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
+            # DB 캐시에서도 존재하지 않는 파일 제거 (현재 표시 중인 검색 결과 기준)
+            if current_hash_opts["method"] and current_hash_opts["hash_size"]:
+                method = current_hash_opts["method"]
+                hash_size = current_hash_opts["hash_size"]
+            else:
+                method, hash_size, _ratio, _tol = resolve_search_options()
             remove_missing_files_from_cache(method, hash_size, missing_paths)
+            _save_groups_to_db(new_groups)
             save_duplicate_groups_json(new_groups)
             messagebox.showinfo(lang["ui"].get("info", "정보"), lang["ui"].get("removed_missing", "없는 파일 목록이 제거되었습니다."), parent=win)
             win.lift()
@@ -885,9 +947,12 @@ def show_duplicate_results_window(root, lang, folder_list=None):
             except Exception:
                 pass
 
-        # 3. 비동기/배경으로 JSON 파일 업데이트 (UI 동결 방지)
+        # 3. 비동기/배경으로 DB + JSON 파일 업데이트 (UI 동결 방지)
         new_groups = [g for g in saved_groups if len(g) > 1]
-        threading.Thread(target=lambda: save_duplicate_groups_json(new_groups), daemon=True).start()
+        threading.Thread(
+            target=lambda: (_save_groups_to_db(new_groups), save_duplicate_groups_json(new_groups)),
+            daemon=True
+        ).start()
 
         update_status_bar()
 
@@ -991,12 +1056,34 @@ def show_duplicate_results_window(root, lang, folder_list=None):
 
     def refresh_results():
         """새로고침: 삭제/제거한 항목을 원본에 반영 후 원본에서 다시 복사해오기"""
-        # 1. 삭제/제거된 항목을 원본에 반영
+        # 1. 삭제/제거된 항목을 원본에 반영 (현재 표시 중인 검색 결과 기준)
         apply_changes_on_close()
         # 2. deleted_paths 초기화 (이미 반영했으므로)
         deleted_paths.clear()
-        # 3. 원본에서 다시 복사본 가져오기
-        load_results()
+
+        # 3. 현재 표시 중이던 검색 결과 기준으로 다시 로드 (config 결과로 덮어쓰지 않도록)
+        if current_hash_opts["method"] and current_hash_opts["hash_size"]:
+            method = current_hash_opts["method"]
+            hash_size = current_hash_opts["hash_size"]
+            aspect_ratio_tol = current_hash_opts.get("aspect_ratio_tol")
+            tolerance_rate = current_hash_opts.get("tolerance_rate")
+            if aspect_ratio_tol is not None and tolerance_rate is not None:
+                # JSON 결과 다시 로드
+                from results import _load_groups_from_json
+                json_path = duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance_rate)
+                groups = _load_groups_from_json(json_path, method, hash_size, aspect_ratio_tol, tolerance_rate)
+            else:
+                # DB 결과 다시 로드
+                from comparator import load_duplicate_results_from_db
+                groups = load_duplicate_results_from_db(method, hash_size)
+            if groups:
+                is_live_mode["value"] = False
+                _populate_tree(groups, live_label=False)
+            else:
+                load_results()
+        else:
+            # 현재 config 기준 결과
+            load_results()
         logger.info("[bold cyan][알림] 결과창 새로고침 완료[/bold cyan]")
 
     refresh_btn = tk.Button(button_bar, text=lang["ui"].get("refresh_results", "새로고침"), command=refresh_results)
@@ -1204,13 +1291,19 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         """창 닫기 시 삭제/제거된 파일을 원본 결과에 반영"""
         if deleted_paths:
             try:
-                method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
+                if current_hash_opts["method"] and current_hash_opts["hash_size"]:
+                    method = current_hash_opts["method"]
+                    hash_size = current_hash_opts["hash_size"]
+                else:
+                    method, hash_size, _ratio, _tol = resolve_search_options()
                 count = len(deleted_paths)
                 # DB 캐시에서 삭제된 파일 제거
                 remove_missing_files_from_cache(method, hash_size, list(deleted_paths))
-                # 수정된 그룹을 JSON에 저장
-                if saved_groups:
-                    save_duplicate_groups_json([list(g) for g in saved_groups if len(g) > 1])
+                # 수정된 그룹을 DB 및 JSON에 저장 (선택된 검색 결과 기준)
+                new_groups = [list(g) for g in saved_groups if len(g) > 1]
+                if new_groups:
+                    _save_groups_to_db(new_groups)
+                    save_duplicate_groups_json(new_groups)
                 deleted_paths.clear()  # 중복 반영 방지를 위해 초기화
                 logger.info(f"[bold cyan][알림] 결과창 변경사항 반영: {count}개 파일 제거됨[/bold cyan]")
             except Exception as e:
