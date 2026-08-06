@@ -34,6 +34,7 @@ ui:
   load_saved_results_on_start: "검색 시작 시 이전 결과 불러오기"
   auto_open_duplicate_results: "중복 결과 검색 후 자동으로 창 열기"
   auto_retry_compare: "완료 시 자동 재시도"
+  auto_refresh_results: "자동 재갱신"
   duplicate_results_window: "중복 결과"
   remove_missing: "없는파일 목록에서 제거"
   remove_selected: "체크한 그룹/항목 목록에서 제거"

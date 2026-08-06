@@ -72,6 +72,17 @@ def show_duplicate_results_window(root, lang, folder_list=None):
     rb_unchecked_groups = tk.Radiobutton(control_bar, text="체크 없는 그룹", variable=group_view_var, value="no_checked", command=lambda: _apply_path_filter())
     rb_unchecked_groups.pack(side="left", padx=(2, 2))
 
+    # 자동 재갱신 체크박스 (기본: 해제 상태)
+    # - 체크: 실시간 2초 폴링 자동 갱신 + 비교 완료 시 결과 자동 재로드
+    # - 해제: 수동 새로고침만 동작
+    auto_refresh_var = tk.BooleanVar(value=False)
+    tk.Checkbutton(
+        control_bar,
+        text=lang["ui"].get("auto_refresh_results", "자동 재갱신"),
+        variable=auto_refresh_var,
+        command=lambda: _on_auto_refresh_toggle(),
+    ).pack(side="left", padx=(5, 2))
+
     # ============================================================
     # 폴더 선택창의 체크 상태 반영 필터
     # - 폴더 선택창(folder_list)에서 체크 해제된 폴더의 파일은 결과에서 제외
@@ -938,10 +949,25 @@ def show_duplicate_results_window(root, lang, folder_list=None):
 
     # ============================================================
     # 실시간 중복 그룹 갱신 (백그라운드 스레드 + UI 스레드 분리)
+    # - '자동 재갱신' 체크박스(auto_refresh_var)로 제어됨
+    # - 기본값: 해제 (수동 새로고침만 동작)
     # ============================================================
-    live_refresh_enabled = {"value": True}
+    live_refresh_enabled = {"value": False}
     live_refresh_after_id = {"id": None}
     last_group_count = {"value": 0}  # 마지막으로 확인한 그룹 수
+
+    def _on_auto_refresh_toggle():
+        """자동 재갱신 체크박스 토글 시 실시간 폴링 시작/중지"""
+        if auto_refresh_var.get():
+            # 체크: 실시간 폴링 시작 (이미 실행 중이면 중복 예약 방지)
+            if not live_refresh_enabled["value"]:
+                live_refresh_enabled["value"] = True
+                if live_refresh_after_id["id"] is None:
+                    refresh_live_groups()
+        else:
+            # 해제: 실시간 폴링 중지
+            stop_live_refresh()
+        logger.info(f"[bold cyan][알림] 자동 재갱신 {'활성화' if auto_refresh_var.get() else '비활성화'}[/bold cyan]")
 
     def refresh_live_groups():
         """진행 중인 비교의 중복 그룹을 실시간으로 트리에 반영 (백그라운드)"""
@@ -1073,6 +1099,33 @@ def show_duplicate_results_window(root, lang, folder_list=None):
                 pass
             live_refresh_after_id["id"] = None
 
+    # ============================================================
+    # 외부(run.py)에서 호출 가능한 인터페이스
+    # - run.py에서 자동 재시도가 발생할 때 이 함수를 호출하여
+    #   '자동 재갱신' 체크박스가 켜져 있으면 결과를 자동으로 재로드
+    # ============================================================
+    def _notify_compare_retry():
+        """자동 재시도 후 결과 자동 갱신 (체크박스가 켜져 있을 때만)"""
+        if auto_refresh_var.get():
+            def _do_auto_refresh():
+                try:
+                    # 1. 삭제/제거된 항목을 원본에 반영
+                    apply_changes_on_close()
+                    # 2. deleted_paths 초기화 (이미 반영했으므로)
+                    deleted_paths.clear()
+                    # 3. 원본에서 다시 복사본 가져오기
+                    load_results()
+                    logger.info("[bold cyan][알림] 자동 재시도 후 결과창 자동 갱신 완료[/bold cyan]")
+                except Exception as e:
+                    logger.error(f"[결과 자동 갱신 오류] {e}")
+            try:
+                win.after(0, _do_auto_refresh)
+            except Exception:
+                pass
+
+    # run.py에서 접근할 수 있도록 win 객체에 콜백 노출
+    win.notify_compare_retry = _notify_compare_retry
+
     def apply_changes_on_close():
         """창 닫기 시 삭제/제거된 파일을 원본 결과에 반영"""
         if deleted_paths:
@@ -1110,3 +1163,5 @@ def show_duplicate_results_window(root, lang, folder_list=None):
 
     # 창이 닫힐 때: 실시간 갱신 중지 + 변경사항 원본 반영
     win.bind("<Destroy>", _on_destroy)
+
+    return win

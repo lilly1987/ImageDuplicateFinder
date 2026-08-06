@@ -229,6 +229,14 @@ def main():
                 root.after(0, update_cache_ui)
                 if auto_retry_var.get() and has_remaining and not user_stop_flag["requested"]:
                     logger.info("[bold cyan][알림] 비교할 건수가 남아 자동 재시도합니다.[/bold cyan]")
+                    # 결과창이 열려 있으면 '자동 재갱신' 체크박스가 켜져 있을 때 자동 갱신
+                    results_win = _open_windows.get("results")
+                    if results_win is not None:
+                        try:
+                            if hasattr(results_win, "notify_compare_retry"):
+                                results_win.notify_compare_retry()
+                        except Exception:
+                            pass
                     root.after(0, start_compare_thread)
 
         threading.Thread(target=worker, daemon=True).start()
