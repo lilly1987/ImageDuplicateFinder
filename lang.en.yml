@@ -37,6 +37,7 @@ ui:
   auto_open_duplicate_results: "Auto-open duplicate results window after search"
   auto_retry_compare: "Auto-retry when compare work remains"
   auto_refresh_results: "Auto Refresh"
+  show_hash: "Show Hash"
   duplicate_results_window: "Duplicate Results"
   remove_missing: "Remove missing files"
   remove_selected: "Remove checked groups/items"

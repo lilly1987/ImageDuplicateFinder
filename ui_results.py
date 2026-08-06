@@ -83,6 +83,17 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         command=lambda: _on_auto_refresh_toggle(),
     ).pack(side="left", padx=(5, 2))
 
+    # 해시 보여주기 체크박스 (기본: 해제 상태)
+    # - 체크: 미리보기에서 폴더경로 아래에 해시값 표시
+    # - 해제: 해시값 숨김
+    show_hash_var = tk.BooleanVar(value=False)
+    tk.Checkbutton(
+        control_bar,
+        text=lang["ui"].get("show_hash", "해시 보여주기"),
+        variable=show_hash_var,
+        command=lambda: _on_show_hash_toggle(),
+    ).pack(side="left", padx=(5, 2))
+
     # ============================================================
     # 폴더 선택창의 체크 상태 반영 필터
     # - 폴더 선택창(folder_list)에서 체크 해제된 폴더의 파일은 결과에서 제외
@@ -568,6 +579,23 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         _populate_tree(groups, live_label=False)
         return saved_groups
 
+    def _get_file_hash_text(file_path):
+        """현재 검색 옵션 기준 파일 해시 문자열 반환 (DB 캐시 → 계산)"""
+        try:
+            from hasher import get_cached_file_hash
+            method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
+            h = get_cached_file_hash((file_path, method, hash_size))
+            return str(h) if h else None
+        except Exception:
+            return None
+
+    def _on_show_hash_toggle():
+        """해시 보여주기 체크박스 토글 시 현재 미리보기를 갱신"""
+        try:
+            show_selected_preview()
+        except Exception:
+            pass
+
     def display_preview_for_group(group):
         """
         그룹 미리보기 표시 (비동기 이미지 로드).
@@ -593,7 +621,8 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         generation = _preview_generation["value"]
 
         # 각 파일의 프레임/헤더를 즉시 생성
-        frame_map = {}  # frame_id -> (frame, file_path, img_label)
+        show_hash = show_hash_var.get()
+        frame_map = {}  # frame_id -> (frame, file_path, img_label, hash_label)
         for file_path in group:
             frame = tk.Frame(preview_inner, bd=1, relief="solid", padx=4, pady=4)
             frame.pack(fill="x", pady=2, padx=2)
@@ -614,6 +643,12 @@ def show_duplicate_results_window(root, lang, folder_list=None):
             header_row.grid_columnconfigure(0, weight=0)
             header_row.grid_columnconfigure(1, weight=1)
 
+            # 해시 라벨 (폴더경로 아래) - '해시 보여주기' 체크 시에만 생성
+            hash_label = None
+            if show_hash:
+                hash_label = tk.Label(frame, text="해시: 계산 중...", anchor="w", fg="blue")
+                hash_label.pack(fill="x")
+
             if not os.path.exists(file_path):
                 label = tk.Label(frame, text=lang["ui"].get("missing_file", "파일을 찾을 수 없습니다."), fg="red")
                 label.pack(fill="x")
@@ -624,18 +659,22 @@ def show_duplicate_results_window(root, lang, folder_list=None):
             loading_label.pack(fill="x")
 
             img_label = tk.Label(frame)
-            frame_map[id(frame)] = (frame, file_path, img_label, loading_label)
+            frame_map[id(frame)] = (frame, file_path, img_label, loading_label, hash_label)
 
         if not frame_map:
             return
 
-        # 백그라운드 스레드에서 이미지 디코딩/리사이즈 (UI 블로킹 방지)
+        # 백그라운드 스레드에서 이미지 디코딩/리사이즈 + 해시 계산 (UI 블로킹 방지)
         def load_images_async():
             # 각 프레임에 대해 PIL 이미지 준비 (디코딩 - CPU/IO 무거운 작업)
-            prepared = []  # [(frame_id, pil_image_or_None)]
-            for frame_id, (frame, file_path, img_label, loading_label) in frame_map.items():
+            prepared = []  # [(frame_id, pil_image_or_None, hash_text_or_None)]
+            for frame_id, (frame, file_path, img_label, loading_label, hash_label) in frame_map.items():
                 if _preview_generation["value"] != generation:
                     return  # 최신 세대 아님 - 버림
+                # 해시 계산 (선택 사항: 체크박스 켜짐 시에만)
+                hash_text = None
+                if hash_label is not None:
+                    hash_text = _get_file_hash_text(file_path)
                 try:
                     stat = os.stat(file_path)
                     cache_key = (file_path, stat.st_mtime, stat.st_size)
@@ -652,7 +691,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
                             _preview_image_cache[cache_key] = pil_img
                 except Exception:
                     pil_img = None
-                prepared.append((frame_id, pil_img))
+                prepared.append((frame_id, pil_img, hash_text))
 
             if _preview_generation["value"] != generation:
                 return
@@ -661,12 +700,22 @@ def show_duplicate_results_window(root, lang, folder_list=None):
             def apply_images():
                 if _preview_generation["value"] != generation:
                     return
-                for frame_id, pil_img in prepared:
+                for frame_id, pil_img, hash_text in prepared:
                     item = frame_map.get(frame_id)
                     if item is None:
                         continue
-                    frame, file_path, img_label, loading_label = item
+                    frame, file_path, img_label, loading_label, hash_label = item
                     loading_label.destroy()
+                    # 해시 라벨 업데이트 (폴더경로 아래)
+                    if hash_label is not None:
+                        try:
+                            if hash_label.winfo_exists():
+                                if hash_text:
+                                    hash_label.config(text=f"해시: {hash_text}")
+                                else:
+                                    hash_label.config(text="해시: (조회 실패)", fg="red")
+                        except Exception:
+                            pass
                     try:
                         if pil_img is None:
                             raise Exception("load failed")
