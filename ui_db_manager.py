@@ -727,14 +727,14 @@ def show_db_manager_window(root, lang):
     backup_btn = tk.Button(
         backup_frame,
         text=lang["ui"].get("db_backup", "백업"),
-        command=_do_backup,
+        command=lambda: _do_backup(),
     )
     backup_btn.pack(side="left", padx=(0, 5))
 
     restore_btn = tk.Button(
         backup_frame,
         text=lang["ui"].get("db_restore", "복원"),
-        command=_do_restore,
+        command=lambda: _do_restore(),
     )
     restore_btn.pack(side="left", padx=(0, 5))
 
