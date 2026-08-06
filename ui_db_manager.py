@@ -46,6 +46,46 @@ def _parse_table_meta(table_name, base_name):
         return None
 
 
+def _format_size(num_bytes):
+    """바이트 → 사람이 읽기 쉬운 크기 문자열 (KB/MB/GB)"""
+    try:
+        num_bytes = int(num_bytes or 0)
+    except (ValueError, TypeError):
+        return "0 B"
+    if num_bytes < 1024:
+        return f"{num_bytes} B"
+    kb = num_bytes / 1024
+    if kb < 1024:
+        return f"{kb:.1f} KB"
+    mb = kb / 1024
+    if mb < 1024:
+        return f"{mb:.2f} MB"
+    gb = mb / 1024
+    return f"{gb:.2f} GB"
+
+
+def _estimate_table_data_bytes(cur, table, base):
+    """테이블의 순수 데이터 크기(바이트) 대략 계산 (dbstat 사용 불가 시)"""
+    try:
+        if base == "hash_cache":
+            # path + hash 문자열 + mtime(8) + size(8) + 행 오버헤드(24)
+            cur.execute(f"SELECT COALESCE(SUM(length(path) + length(hash) + 40), 0) FROM {table}")
+        elif base == "compare_cache":
+            # file1 + file2 + distance(8) + 행 오버헤드(24)
+            cur.execute(f"SELECT COALESCE(SUM(length(file1) + length(file2) + 32), 0) FROM {table}")
+        elif base == "compare_progress":
+            # path + status(8) + 행 오버헤드(24)
+            cur.execute(f"SELECT COALESCE(SUM(length(path) + 32), 0) FROM {table}")
+        elif base == "duplicate_results":
+            # group_id(8) + path + 행 오버헤드(24)
+            cur.execute(f"SELECT COALESCE(SUM(length(path) + 32), 0) FROM {table}")
+        else:
+            return 0
+        return cur.fetchone()[0] or 0
+    except Exception:
+        return 0
+
+
 def _collect_table_stats():
     """
     모든 DB 테이블 통계 수집.
@@ -53,7 +93,7 @@ def _collect_table_stats():
         "tables": [
             {
                 "name": str, "base": str, "method": str, "hash_size": int,
-                "count": int, "groups": int
+                "count": int, "groups": int, "size_bytes": int
             }, ...
         ],
         "db_size": float (MB)
@@ -71,7 +111,18 @@ def _collect_table_stats():
             conn = sqlite3.connect(DB_FILE, timeout=30)
             try:
                 cur = conn.cursor()
-                seen_bases = set()
+                # 전체 DB 파일 크기 (페이지 단위 실제 사용 공간 기반)
+                page_size = 4096
+                total_pages = 0
+                try:
+                    cur.execute("PRAGMA page_size")
+                    page_size = cur.fetchone()[0] or 4096
+                    cur.execute("PRAGMA page_count")
+                    total_pages = cur.fetchone()[0] or 0
+                except Exception:
+                    pass
+                total_db_bytes = total_pages * page_size
+
                 for base in _DB_CACHE_BASES:
                     tables = _get_all_table_names(cur, base)
                     for table in tables:
@@ -97,6 +148,7 @@ def _collect_table_stats():
                                 count = cur.fetchone()[0] or 0
                             except Exception:
                                 count = 0
+                        data_bytes = _estimate_table_data_bytes(cur, table, base)
                         stats["tables"].append({
                             "name": table,
                             "base": base,
@@ -104,10 +156,19 @@ def _collect_table_stats():
                             "hash_size": hash_size,
                             "count": count,
                             "groups": groups,
+                            "size_bytes": data_bytes,
                         })
-                        seen_bases.add(base)
             finally:
                 conn.close()
+
+        # 전체 DB 파일 크기 대비 비율로 페이지 오버헤드 배분 (근사 조정)
+        total_data_bytes = sum(t["size_bytes"] for t in stats["tables"])
+        if total_data_bytes > 0 and total_db_bytes > 0:
+            scale = total_db_bytes / total_data_bytes
+            if scale > 100:  # 비정상적으로 큰 비율은 제한 (freelist 등 제외)
+                scale = min(scale, 3.0)
+            for t in stats["tables"]:
+                t["size_bytes"] = int(t["size_bytes"] * scale)
     except Exception as e:
         logger.error(f"[DB 관리] 테이블 통계 수집 오류: {e}")
 
@@ -313,7 +374,7 @@ def show_db_manager_window(root, lang):
 
     result_tree = ttk.Treeview(
         result_tree_frame,
-        columns=("base", "method", "hash_size", "count", "groups"),
+        columns=("base", "method", "hash_size", "count", "groups", "size"),
         show="headings",
     )
     result_tree.heading("base", text=lang["ui"].get("db_col_base", "유형"))
@@ -321,11 +382,13 @@ def show_db_manager_window(root, lang):
     result_tree.heading("hash_size", text=lang["ui"].get("db_col_hash_size", "해시 크기"))
     result_tree.heading("count", text=lang["ui"].get("db_col_count", "건수"))
     result_tree.heading("groups", text=lang["ui"].get("db_col_groups", "그룹 수"))
-    result_tree.column("base", width=130, anchor="w")
-    result_tree.column("method", width=100, anchor="w")
-    result_tree.column("hash_size", width=80, anchor="center")
-    result_tree.column("count", width=100, anchor="e")
-    result_tree.column("groups", width=80, anchor="e")
+    result_tree.heading("size", text=lang["ui"].get("db_col_size", "크기"))
+    result_tree.column("base", width=120, anchor="w")
+    result_tree.column("method", width=90, anchor="w")
+    result_tree.column("hash_size", width=70, anchor="center")
+    result_tree.column("count", width=90, anchor="e")
+    result_tree.column("groups", width=70, anchor="e")
+    result_tree.column("size", width=90, anchor="e")
     result_tree.pack(side="left", fill="both", expand=True)
 
     result_scroll = ttk.Scrollbar(result_tree_frame, orient="vertical", command=result_tree.yview)
@@ -353,7 +416,14 @@ def show_db_manager_window(root, lang):
             }.get(t["base"], t["base"])
             iid = result_tree.insert(
                 "", "end",
-                values=(base_label, t["method"], t["hash_size"], f"{t['count']:,}", f"{t['groups']:,}"),
+                values=(
+                    base_label,
+                    t["method"],
+                    t["hash_size"],
+                    f"{t['count']:,}",
+                    f"{t['groups']:,}",
+                    _format_size(t["size_bytes"]),
+                ),
             )
             _result_table_data.append({
                 "iid": iid,
@@ -537,7 +607,7 @@ def show_db_manager_window(root, lang):
 
     cache_tree = ttk.Treeview(
         cache_tree_frame,
-        columns=("method", "hash_size", "hash_count", "compare_count", "progress_count"),
+        columns=("method", "hash_size", "hash_count", "compare_count", "progress_count", "size"),
         show="headings",
     )
     cache_tree.heading("method", text=lang["ui"].get("db_col_method", "알고리즘"))
@@ -545,11 +615,13 @@ def show_db_manager_window(root, lang):
     cache_tree.heading("hash_count", text=lang["ui"].get("db_col_hash_count", "해시"))
     cache_tree.heading("compare_count", text=lang["ui"].get("db_col_compare_count", "비교"))
     cache_tree.heading("progress_count", text=lang["ui"].get("db_col_progress_count", "진행"))
+    cache_tree.heading("size", text=lang["ui"].get("db_col_size", "크기"))
     cache_tree.column("method", width=100, anchor="w")
     cache_tree.column("hash_size", width=80, anchor="center")
-    cache_tree.column("hash_count", width=120, anchor="e")
-    cache_tree.column("compare_count", width=120, anchor="e")
-    cache_tree.column("progress_count", width=120, anchor="e")
+    cache_tree.column("hash_count", width=100, anchor="e")
+    cache_tree.column("compare_count", width=100, anchor="e")
+    cache_tree.column("progress_count", width=100, anchor="e")
+    cache_tree.column("size", width=80, anchor="e")
     cache_tree.pack(side="left", fill="both", expand=True)
 
     cache_scroll = ttk.Scrollbar(cache_tree_frame, orient="vertical", command=cache_tree.yview)
@@ -562,17 +634,18 @@ def show_db_manager_window(root, lang):
             cache_tree.delete(item)
 
         stats = _collect_table_stats()
-        # (method, hash_size)별 집계
+        # (method, hash_size)별 집계 (용량 포함)
         agg = {}
         for t in stats["tables"]:
             key = (t["method"], t["hash_size"])
-            entry = agg.setdefault(key, {"hash": 0, "compare": 0, "progress": 0})
+            entry = agg.setdefault(key, {"hash": 0, "compare": 0, "progress": 0, "size": 0})
             if t["base"] == "hash_cache":
                 entry["hash"] = t["count"]
             elif t["base"] == "compare_cache":
                 entry["compare"] = t["count"]
             elif t["base"] == "compare_progress":
                 entry["progress"] = t["count"]
+            entry["size"] += t["size_bytes"]
 
         for (method, hash_size), entry in sorted(agg.items()):
             cache_tree.insert(
@@ -583,6 +656,7 @@ def show_db_manager_window(root, lang):
                     f"{entry['hash']:,}",
                     f"{entry['compare']:,}",
                     f"{entry['progress']:,}",
+                    _format_size(entry["size"]),
                 ),
             )
 
