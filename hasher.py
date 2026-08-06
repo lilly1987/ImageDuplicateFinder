@@ -22,6 +22,45 @@ from state import hash_memory_cache, hash_memory_lock, is_stop_requested, image_
 hash_process_pool = None
 _hash_worker_count = 0  # 0이면 CPU 코어 기반 자동
 
+
+def _should_rehash(row_mtime, row_size, stat):
+    """
+    캐시된 해시의 재계산 여부 판단.
+    - rehash_on_mtime_change=True: 파일 수정/만든 시간(mtime)이 변경된 경우에만 재계산
+    - rehash_on_size_change=True: 파일 크기(size)가 변경된 경우에만 재계산
+    - 둘 다 False (기본): mtime OR size 변경 시 재계산 (기존 동작 유지)
+    - 반환: True면 재계산, False면 캐시 사용
+    """
+    mtime_changed = (row_mtime != stat.st_mtime)
+    size_changed = (row_size != stat.st_size)
+
+    # 변경된 것이 없으면 항상 캐시 유효
+    if not mtime_changed and not size_changed:
+        return False
+
+    try:
+        from config import load_config
+        config = load_config()
+    except Exception:
+        config = {}
+    rehash_mtime = config.get("rehash_on_mtime_change", False)
+    rehash_size = config.get("rehash_on_size_change", False)
+
+    # 둘 다 체크: mtime OR size 변경 시 재계산
+    if rehash_mtime and rehash_size:
+        return True
+
+    # mtime만 체크: mtime 변경 시 재계산, size만 변경이면 캐시 유지
+    if rehash_mtime:
+        return mtime_changed
+
+    # size만 체크: size 변경 시 재계산, mtime만 변경이면 캐시 유지
+    if rehash_size:
+        return size_changed
+
+    # 기본 (둘 다 해제): mtime OR size 변경 시 재계산
+    return False
+
 # imagehash 라이브러리는 hash_size^2 비트 해시를 생성함.
 # 예: hash_size=64 → 4096비트(hex 1024자), 128 → 16384비트(hex 4096자), 256 → 65536비트(hex 16384자)
 # 128/256은 파일당 2KB~8KB 문자열이 되어 DB가 수십 GB로 비대해지므로 최대 64로 제한.
@@ -252,7 +291,7 @@ def get_file_hash(path, method="ahash", hash_size=8):
             conn.close()
 
     # 캐시가 유효하면 (mtime, size 동일) 반환
-    if row and row[1] == stat.st_mtime and row[2] == stat.st_size:
+    if row and not _should_rehash(row[1], row[2], stat):
         try:
             return imagehash.hex_to_hash(row[0])
         except Exception:
@@ -359,7 +398,8 @@ def _query_cached_hashes(paths, method, hash_size):
                 stat = os.stat(path)
             except Exception:
                 continue
-            if stat.st_mtime == mtime and stat.st_size == size:
+            # 재계산 필요 여부에 따라 캐시 사용 (rehash_on_mtime/size 체크박스 반영)
+            if not _should_rehash(mtime, size, stat):
                 try:
                     cached[path] = imagehash.hex_to_hash(hash_text)
                 except Exception:

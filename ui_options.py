@@ -150,6 +150,14 @@ def show_options(root, lang):
     tk.Entry(scrollable_frame, textvariable=max_hash_compute_var).pack(anchor="w")
     tk.Label(scrollable_frame, text="0 초과 시 기존에 계산된 해시는 건너뛰고, 추가로 계산할 해시 갯수만큼만 계산합니다. 0이면 전체를 계산합니다.", fg="gray", wraplength=550, justify="left").pack(anchor="w", fill="x")
 
+    # --- 해시 다시계산 대상 ---
+    tk.Label(scrollable_frame, text=lang["ui"].get("rehash_target", "해시 다시계산 대상"), font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 2))
+    rehash_on_mtime_var = tk.BooleanVar(value=config.get("rehash_on_mtime_change", False))
+    tk.Checkbutton(scrollable_frame, text=lang["ui"].get("rehash_on_mtime_change", "만든,수정시간 변경"), variable=rehash_on_mtime_var).pack(anchor="w")
+    rehash_on_size_var = tk.BooleanVar(value=config.get("rehash_on_size_change", False))
+    tk.Checkbutton(scrollable_frame, text=lang["ui"].get("rehash_on_size_change", "파일 크기 변경"), variable=rehash_on_size_var).pack(anchor="w")
+    tk.Label(scrollable_frame, text="캐시된 해시가 있는 파일 중 파일의 만든/수정 시간 또는 크기가 변경된 경우에만 해시를 다시 계산합니다. 두 조건 모두 캐시 검증에 항상 사용되며, 체크 시 해당 조건이 변하면 재계산합니다.", fg="gray", wraplength=550, justify="left").pack(anchor="w", fill="x")
+
     # --- 최대 비교 파일 수 ---
     tk.Label(scrollable_frame, text=lang["ui"].get("max_compare_files", "추가로 비교할 최대 파일 수"), font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 2))
     max_files_var = tk.IntVar(value=config.get("max_compare_files", 0))
@@ -195,6 +203,8 @@ def show_options(root, lang):
         config["duplicate_limit_count"] = duplicate_limit_var.get()
         config["hash_precompute_batch_size"] = batch_size_var.get()
         config["max_hash_compute_files"] = max_hash_compute_var.get()
+        config["rehash_on_mtime_change"] = rehash_on_mtime_var.get()
+        config["rehash_on_size_change"] = rehash_on_size_var.get()
         config["max_compare_files"] = max_files_var.get()
         config["max_memory_mb"] = max_memory_var.get()
         config["use_compare_cache"] = use_compare_cache_var.get()
