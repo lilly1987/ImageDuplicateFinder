@@ -513,6 +513,13 @@ def show_db_manager_window(root, lang):
     )
     cleanup_btn.pack(side="left", padx=(0, 3))
 
+    delete_selected_btn = tk.Button(
+        cache_toolbar,
+        text=lang["ui"].get("db_delete_selected_hash", "선택한 알고리즘/길이 삭제"),
+        command=lambda: _delete_selected_hash_cache(),
+    )
+    delete_selected_btn.pack(side="left", padx=(0, 3))
+
     clear_all_btn = tk.Button(
         cache_toolbar,
         text=lang["ui"].get("db_clear_cache", "전체 캐시 초기화"),
@@ -586,6 +593,72 @@ def show_db_manager_window(root, lang):
                 "해시 {h:,} / 비교 {c:,} / 진행 {p:,} / 중복 {d:,}",
             ).format(h=h_cnt, c=c_cnt, p=p_cnt, d=d_cnt)
         )
+
+    def _get_selected_hash_cache():
+        """선택된 (method, hash_size) 반환 (트리 행 값 직접 읽기)"""
+        selected = cache_tree.selection()
+        if not selected:
+            return None
+        vals = cache_tree.item(selected[0], "values")
+        if len(vals) < 2:
+            return None
+        try:
+            hash_size = int(vals[1])
+        except (ValueError, TypeError):
+            return None
+        return str(vals[0]), hash_size
+
+    def _delete_selected_hash_cache():
+        """선택한 알고리즘/길이의 해시 캐시 테이블 전체 삭제"""
+        meta = _get_selected_hash_cache()
+        if meta is None:
+            messagebox.showinfo(
+                lang["ui"].get("info", "정보"),
+                lang["ui"].get("db_select_cache_first", "삭제할 알고리즘/길이를 선택하세요."),
+                parent=win,
+            )
+            return
+        method, hash_size = meta
+        hash_t = _table_name("hash_cache", method, hash_size)
+        compare_t = _table_name("compare_cache", method, hash_size)
+        progress_t = _table_name("compare_progress", method, hash_size)
+        results_t = _table_name("duplicate_results", method, hash_size)
+
+        confirm = messagebox.askyesno(
+            lang["ui"].get("confirm", "확인"),
+            lang["ui"].get("db_delete_selected_hash_confirm", "선택한 알고리즘/길이의 캐시를 삭제하시겠습니까?").format(
+                method=method, hash_size=hash_size
+            )
+            + f"\n[{method}, h{hash_size}]\n"
+            + lang["ui"].get("db_delete_selected_hash_tables", "해시/비교/진행/중복 결과 테이블이 모두 삭제됩니다."),
+            parent=win,
+            default=messagebox.NO,
+        )
+        if not confirm:
+            return
+        try:
+            with db_lock:
+                conn = sqlite3.connect(DB_FILE, timeout=30)
+                try:
+                    cur = conn.cursor()
+                    for table in (hash_t, compare_t, progress_t, results_t):
+                        cur.execute(f"DROP TABLE IF EXISTS {table}")
+                    conn.commit()
+                finally:
+                    conn.close()
+            _refresh_cache_stats()
+            messagebox.showinfo(
+                lang["ui"].get("info", "정보"),
+                lang["ui"].get("db_delete_selected_hash_done", "삭제가 완료되었습니다."),
+                parent=win,
+            )
+            logger.info(f"[bold cyan][알림] DB 해시 캐시 삭제 완료: [{method}, h{hash_size}][/bold cyan]")
+        except Exception as e:
+            messagebox.showerror(
+                lang["ui"].get("info", "정보"),
+                f"{lang['ui'].get('db_delete_error', '삭제 실패')}: {e}",
+                parent=win,
+            )
 
     def _cleanup_missing_files():
         """존재하지 않는 파일의 해시/비교/진행/중복 데이터 일괄 정리"""
