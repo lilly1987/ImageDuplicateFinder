@@ -42,6 +42,8 @@ def show_duplicate_results_window(root, lang, folder_list=None):
     search_var = tk.StringVar()
     search_combo = ttk.Combobox(control_bar, textvariable=search_var, state="readonly", width=50)
     search_combo.pack(side="left", padx=(0, 10))
+    # DB 관리창에서 드롭다운 선택 연동을 위해 노출
+    win._search_combo = search_combo
 
     # 중복 폴더 유형 필터 드롭다운
     tk.Label(control_bar, text="폴더 필터:").pack(side="left", padx=(5, 2))

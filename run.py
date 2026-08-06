@@ -7,6 +7,7 @@ from lang import load_lang
 from ui_options import *
 from ui_settings import show_settings_window
 from ui_results import show_duplicate_results_window
+from ui_db_manager import show_db_manager_window
 
 from tooltip import add_tooltip
 from ui_cache import get_cache_counts, clear_cache, drop_db
@@ -183,6 +184,11 @@ def main():
               command=lambda: show_single_window("results", show_duplicate_results_window, root, lang, folder_list))
     results_btn.pack(side="left")
     add_tooltip(results_btn, lang["ui"].get("tooltip_duplicate_results", ""))
+
+    db_manager_btn = tk.Button(button_frame, text=lang["ui"].get("db_manager_button", "DB 관리"),
+              command=lambda: show_single_window("db_manager", show_db_manager_window, root, lang))
+    db_manager_btn.pack(side="left")
+    add_tooltip(db_manager_btn, lang["ui"].get("tooltip_db_manager", ""))
 
     def on_stop_click():
         user_stop_flag["requested"] = True
