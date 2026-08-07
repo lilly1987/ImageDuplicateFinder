@@ -10,7 +10,7 @@ from ui_results import show_duplicate_results_window
 from ui_db_manager import show_db_manager_window
 
 from tooltip import add_tooltip
-from ui_cache import get_cache_counts, clear_cache, drop_db
+from ui_cache import get_cache_counts
 from folder_list import (
     create_folder_list, create_count_label,
     add_folder, drop, clear_list, delete_selected, update_count,
@@ -112,20 +112,16 @@ def main():
         if verbose:
             logger.info(f"[bold cyan][알림] 캐시 건수 새로고침 완료 (알고리즘: {method}, 해시 크기: {hash_size}, 해시: {h_cnt:,}개, 비교: {c_cnt:,}개, 진행: {p_cnt:,}개, 중복: {d_cnt:,}개)[/bold cyan]")
 
-    clear_cache_btn = tk.Button(info_frame, text="캐시 초기화",
-              command=lambda: clear_cache(update_cache_ui))
-    clear_cache_btn.pack(side="left")
-    add_tooltip(clear_cache_btn, lang["ui"].get("tooltip_cache_clear", ""))
-
-    drop_db_btn = tk.Button(info_frame, text="DB 삭제",
-              command=lambda: drop_db(update_cache_ui))
-    drop_db_btn.pack(side="left")
-    add_tooltip(drop_db_btn, lang["ui"].get("tooltip_cache_drop", ""))
-
     refresh_cache_btn = tk.Button(info_frame, text="캐시 새로고침",
               command=lambda: update_cache_ui(verbose=True))
     refresh_cache_btn.pack(side="left")
     add_tooltip(refresh_cache_btn, lang["ui"].get("tooltip_cache_refresh", ""))
+
+    # DB 관리 버튼 (상단 button_frame에서 하단 info_frame의 삭제된 위치로 이동)
+    db_manager_btn = tk.Button(info_frame, text=lang["ui"].get("db_manager_button", "DB 관리"),
+              command=lambda: show_single_window("db_manager", show_db_manager_window, root, lang))
+    db_manager_btn.pack(side="left")
+    add_tooltip(db_manager_btn, lang["ui"].get("tooltip_db_manager", ""))
 
     update_cache_ui()
 
@@ -184,11 +180,6 @@ def main():
               command=lambda: show_single_window("results", show_duplicate_results_window, root, lang, folder_list))
     results_btn.pack(side="left")
     add_tooltip(results_btn, lang["ui"].get("tooltip_duplicate_results", ""))
-
-    db_manager_btn = tk.Button(button_frame, text=lang["ui"].get("db_manager_button", "DB 관리"),
-              command=lambda: show_single_window("db_manager", show_db_manager_window, root, lang))
-    db_manager_btn.pack(side="left")
-    add_tooltip(db_manager_btn, lang["ui"].get("tooltip_db_manager", ""))
 
     def on_stop_click():
         user_stop_flag["requested"] = True
