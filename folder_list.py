@@ -77,6 +77,9 @@ def create_folder_list(root):
     # 체크박스 토글 클릭
     tree.bind("<Button-1>", lambda e: _on_tree_click(tree, e))
 
+    # Ctrl+C: 선택된 항목(체크 아님)들의 경로 복사
+    tree.bind("<Control-c>", lambda e: _copy_selected_paths(tree))
+
     # 컨테이너에 위젯들 저장
     container._tree = tree
     container._filter_var = filter_var
@@ -89,6 +92,23 @@ def create_folder_list(root):
     container._detached = set()
 
     return container
+
+
+def _copy_selected_paths(tree):
+    """선택된(하이라이트된) 항목들의 경로를 클립보드에 복사 (Ctrl+C)"""
+    selected = tree.selection()
+    if not selected:
+        return None
+    paths = []
+    for iid in selected:
+        p = tree.set(iid, "path")
+        if p:
+            paths.append(p)
+    if paths:
+        top = tree.winfo_toplevel()
+        top.clipboard_clear()
+        top.clipboard_append(os.linesep.join(paths))
+    return "break"
 
 
 def _on_tree_click(tree, event):

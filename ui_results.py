@@ -429,6 +429,37 @@ def show_duplicate_results_window(root, lang, folder_list=None):
             return int(tags[1])
         return tree.index(item_id)
 
+    def _copy_selected_paths(event=None):
+        """선택된(하이라이트된) 항목들의 파일 경로를 클립보드에 복사 (Ctrl+C)"""
+        selected = tree.selection()
+        if not selected:
+            return "break"
+        paths = []
+        for iid in selected:
+            parent_id = tree.parent(iid)
+            if parent_id:
+                # 개별 파일 항목: 해당 파일 경로 복사
+                p = tree.set(iid, "path")
+                if p:
+                    paths.append(p)
+            else:
+                # 그룹 항목: 그룹 내 모든 파일 경로 복사
+                group_idx = _get_group_index(iid)
+                if 0 <= group_idx < len(saved_groups):
+                    paths.extend(saved_groups[group_idx])
+        # 중복 제거 (선택된 그룹과 개별 파일이 겹칠 수 있음)
+        seen = set()
+        unique_paths = []
+        for p in paths:
+            if p not in seen:
+                seen.add(p)
+                unique_paths.append(p)
+        if unique_paths:
+            top = tree.winfo_toplevel()
+            top.clipboard_clear()
+            top.clipboard_append(os.linesep.join(unique_paths))
+        return "break"
+
     def get_checked_items():
         checked_groups = set()
         checked_files = []
@@ -1095,6 +1126,8 @@ def show_duplicate_results_window(root, lang, folder_list=None):
     tree.bind("<space>", on_tree_space)
     tree.bind("<Delete>", on_delete_key)
     tree.bind("<Shift-Delete>", on_shift_delete_key)
+    tree.bind("<Control-c>", _copy_selected_paths)
+    win.bind("<Control-c>", _copy_selected_paths)
     win.bind("<Delete>", on_delete_key)
     win.bind("<Shift-Delete>", on_shift_delete_key)
 
