@@ -47,7 +47,13 @@ def show_duplicate_results_window(root, lang, folder_list=None):
 
     # 중복 폴더 유형 필터 드롭다운
     tk.Label(control_bar, text="폴더 필터:").pack(side="left", padx=(5, 2))
-    folder_filter_var = tk.StringVar(value="전체 보기")
+    try:
+        from config import load_config as _load_results_cfg
+        _results_cfg = _load_results_cfg() or {}
+        _ui_results_cfg = _results_cfg.get("ui_results", {})
+    except Exception:
+        _ui_results_cfg = {}
+    folder_filter_var = tk.StringVar(value=_ui_results_cfg.get("folder_filter", "전체 보기"))
     folder_filter_combo = ttk.Combobox(
         control_bar,
         textvariable=folder_filter_var,
@@ -56,7 +62,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         width=14
     )
     folder_filter_combo.pack(side="left", padx=(0, 5))
-    folder_filter_combo.bind("<<ComboboxSelected>>", lambda e: _apply_path_filter())
+    folder_filter_combo.bind("<<ComboboxSelected>>", lambda e: (_apply_path_filter(), _save_results_settings()))
 
     # 파일 경로 필터 입력
     tk.Label(control_bar, text="경로 필터:").pack(side="left", padx=(5, 2))
@@ -66,34 +72,33 @@ def show_duplicate_results_window(root, lang, folder_list=None):
     path_filter_entry.bind("<KeyRelease>", lambda e: _apply_path_filter())
 
     # 라디오 버튼: 전체그룹 / 체크 포함 그룹 / 체크 없는 그룹
-    group_view_var = tk.StringVar(value="all")
-    rb_all_groups = tk.Radiobutton(control_bar, text="전체그룹", variable=group_view_var, value="all", command=lambda: _apply_path_filter())
+    group_view_var = tk.StringVar(value=_ui_results_cfg.get("group_view", "all"))
+    rb_all_groups = tk.Radiobutton(control_bar, text="전체그룹", variable=group_view_var, value="all", command=lambda: (_apply_path_filter(), _save_results_settings()))
     rb_all_groups.pack(side="left", padx=(5, 2))
-    rb_checked_groups = tk.Radiobutton(control_bar, text="체크 포함 그룹", variable=group_view_var, value="has_checked", command=lambda: _apply_path_filter())
+    rb_checked_groups = tk.Radiobutton(control_bar, text="체크 포함 그룹", variable=group_view_var, value="has_checked", command=lambda: (_apply_path_filter(), _save_results_settings()))
     rb_checked_groups.pack(side="left", padx=(2, 2))
-    rb_unchecked_groups = tk.Radiobutton(control_bar, text="체크 없는 그룹", variable=group_view_var, value="no_checked", command=lambda: _apply_path_filter())
+    rb_unchecked_groups = tk.Radiobutton(control_bar, text="체크 없는 그룹", variable=group_view_var, value="no_checked", command=lambda: (_apply_path_filter(), _save_results_settings()))
     rb_unchecked_groups.pack(side="left", padx=(2, 2))
-
-    # 자동 재갱신 체크박스 (기본: 해제 상태)
+    # 자동 재갱신 체크박스 (설정 저장/복원)
     # - 체크: 실시간 2초 폴링 자동 갱신 + 비교 완료 시 결과 자동 재로드
     # - 해제: 수동 새로고침만 동작
-    auto_refresh_var = tk.BooleanVar(value=False)
+    auto_refresh_var = tk.BooleanVar(value=_ui_results_cfg.get("auto_refresh", False))
     tk.Checkbutton(
         control_bar,
         text=lang["ui"].get("auto_refresh_results", "자동 재갱신"),
         variable=auto_refresh_var,
-        command=lambda: _on_auto_refresh_toggle(),
+        command=lambda: (_on_auto_refresh_toggle(), _save_results_settings()),
     ).pack(side="left", padx=(5, 2))
 
-    # 해시 보여주기 체크박스 (기본: 해제 상태)
+    # 해시 보여주기 체크박스 (설정 저장/복원)
     # - 체크: 미리보기에서 폴더경로 아래에 해시값 표시
     # - 해제: 해시값 숨김
-    show_hash_var = tk.BooleanVar(value=False)
+    show_hash_var = tk.BooleanVar(value=_ui_results_cfg.get("show_hash", False))
     tk.Checkbutton(
         control_bar,
         text=lang["ui"].get("show_hash", "해시 보여주기"),
         variable=show_hash_var,
-        command=lambda: _on_show_hash_toggle(),
+        command=lambda: (_on_show_hash_toggle(), _save_results_settings()),
     ).pack(side="left", padx=(5, 2))
 
     # ============================================================
@@ -1310,6 +1315,20 @@ def show_duplicate_results_window(root, lang, folder_list=None):
     # run.py에서 접근할 수 있도록 win 객체에 콜백 노출
     win.notify_compare_retry = _notify_compare_retry
 
+    def _save_results_settings():
+        """결과창 설정(폴더 필터/라디오/자동 재갱신/해시)을 config.yml에 저장"""
+        try:
+            from config import load_config, save_config
+            cfg = load_config() or {}
+            ui_results = cfg.setdefault("ui_results", {})
+            ui_results["folder_filter"] = folder_filter_var.get()
+            ui_results["group_view"] = group_view_var.get()
+            ui_results["auto_refresh"] = bool(auto_refresh_var.get())
+            ui_results["show_hash"] = bool(show_hash_var.get())
+            save_config(cfg)
+        except Exception:
+            pass
+
     def apply_changes_on_close():
         """창 닫기 시 삭제/제거된 파일을 원본 결과에 반영"""
         if deleted_paths:
@@ -1346,6 +1365,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         if event.widget == win:
             stop_live_refresh()
             apply_changes_on_close()
+            _save_results_settings()
 
     # 창이 닫힐 때: 실시간 갱신 중지 + 변경사항 원본 반영
     win.bind("<Destroy>", _on_destroy)
