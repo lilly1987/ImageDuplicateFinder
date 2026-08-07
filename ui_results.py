@@ -155,7 +155,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         # 0. 진행 중이면 "실시간 (진행 중)" 항목 최상단 추가
         if not is_stop_requested():
             try:
-                options.append(("실시간 (진행 중)", "live", None, None, None, None))
+                options.append(("[실시간] (진행 중)", "live", None, None, None, None))
             except Exception:
                 pass
 
@@ -179,7 +179,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
                             seen.add(key)
                             # 파일명에 groups 건수는 표시하지 않음 (로드 시 계산)
                             options.append(
-                                (f"{method} / hash_size={hash_size} / tol={tolerance_rate}",
+                                (f"[JSON] {method} / hash_size={hash_size} / tol={tolerance_rate}",
                                  "json", method, hash_size, aspect_ratio_tol, tolerance_rate)
                             )
             except Exception:
@@ -206,7 +206,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
                             json_keys = {(m, h) for (_, t, m, h, *_ ) in options if t == "json"}
                             if (method, hash_size) not in json_keys:
                                 db_options.append(
-                                    (f"{method} / hash_size={hash_size}",
+                                    (f"[DB] {method} / hash_size={hash_size}",
                                      "db", method, hash_size, None, None)
                                 )
                         except ValueError:
