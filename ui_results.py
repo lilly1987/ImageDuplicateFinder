@@ -80,6 +80,20 @@ def show_duplicate_results_window(root, lang, folder_list=None):
     rb_checked_groups.pack(side="left", padx=(2, 2))
     rb_unchecked_groups = tk.Radiobutton(control_bar, text="체크 없는 그룹", variable=group_view_var, value="no_checked", command=lambda: (_apply_path_filter(), _save_results_settings()))
     rb_unchecked_groups.pack(side="left", padx=(2, 2))
+
+    # 라디오 버튼: 폴더 체크 상태 필터 (폴더 선택창 연동)
+    # - 체크된 폴더: 폴더 선택창에서 체크된 폴더의 파일만 표시 (기본값)
+    # - 체크해제된 폴더: 체크 해제된 폴더의 파일만 표시
+    # - 전체 폴더: 체크 상태 무시하고 모든 파일 표시
+    folder_scope_var = tk.StringVar(value=_ui_results_cfg.get("folder_scope", "checked"))
+    if folder_list is not None:
+        tk.Label(control_bar, text="폴더:").pack(side="left", padx=(10, 2))
+        for _fs_text, _fs_val in [("체크된 폴더", "checked"), ("체크해제된 폴더", "unchecked"), ("전체 폴더", "all")]:
+            tk.Radiobutton(
+                control_bar, text=_fs_text, variable=folder_scope_var, value=_fs_val,
+                command=lambda: (_apply_path_filter(), _save_results_settings()),
+            ).pack(side="left", padx=(2, 2))
+
     # 자동 재갱신 체크박스 (설정 저장/복원)
     # - 체크: 실시간 2초 폴링 자동 갱신 + 비교 완료 시 결과 자동 재로드
     # - 해제: 수동 새로고침만 동작
@@ -631,7 +645,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         """트리를 groups 데이터로 채우고 saved_groups 동기화 (청크 분할 주입으로 UI 프리징 방지)"""
         nonlocal saved_groups, all_group_tree_nodes
         _cancel_chunk_job()
-        groups = _filter_groups_by_folder(groups)
+        # (폴더 체크 필터는 데이터 레벨이 아닌 _apply_path_filter에서 동적 적용)
         saved_groups = [list(g) for g in groups] if groups else []
         tree.delete(*tree.get_children())
         all_group_tree_nodes.clear()
@@ -679,10 +693,24 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         _insert_chunk(0)
 
     def _apply_path_filter():
-        """파일 경로 필터 + 폴더 모드 드롭다운 + 그룹 체크 상태 라디오버튼에 따라 트리 항목 표시/숨김"""
+        """파일 경로 필터 + 폴더 모드 드롭다운 + 그룹 체크 상태 라디오버튼 + 폴더 체크 상태 필터에 따라 트리 항목 표시/숨김"""
         keyword = path_filter_var.get().strip().lower()
         view_mode = group_view_var.get() if "group_view_var" in dir() else "all"
         folder_mode = folder_filter_var.get() if "folder_filter_var" in dir() else "전체 보기"
+        folder_scope = folder_scope_var.get() if "folder_scope_var" in dir() else "checked"
+
+        def _matches_folder_scope(file_path):
+            """현재 폴더 체크 상태 필터(checked/unchecked/all)에 파일이 속하는지 판정"""
+            if folder_scope == "all":
+                return True
+            try:
+                in_checked = _is_in_checked_folder(file_path)
+            except Exception:
+                in_checked = True
+            if folder_scope == "checked":
+                return in_checked
+            # unchecked
+            return not in_checked
 
         # 라이브 갱신 등으로 트리가 재구성되는 동안 all_group_tree_nodes에 이미
         # 삭제된(존재하지 않는) 노드가 남을 수 있으므로, 각 노드 존재 여부를 확인하며
@@ -703,6 +731,12 @@ def show_duplicate_results_window(root, lang, folder_list=None):
                     path = tree.set(child_id, "path") or ""
                 except Exception:
                     continue
+
+                # 0. 폴더 체크 상태 필터 (체크된/체크해제된/전체 폴더)
+                if not _matches_folder_scope(path):
+                    tree.detach(child_id)
+                    continue
+
                 path_lower = path.lower()
                 if path:
                     group_dirs.add(os.path.dirname(path))
@@ -1273,7 +1307,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         """실시간 갱신용 트리 구성 (청크 분할 및 선택 유지)"""
         nonlocal saved_groups, all_group_tree_nodes
         _cancel_chunk_job()
-        groups = _filter_groups_by_folder(groups)
+        # (폴더 체크 필터는 데이터 레벨이 아닌 _apply_path_filter에서 동적 적용)
 
         # 재구성 전 현재 체크 상태를 경로 기준으로 백업 (체크 초기화 방지)
         checked_paths = set()
@@ -1396,6 +1430,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
             ui_results = cfg.setdefault("ui_results", {})
             ui_results["folder_filter"] = folder_filter_var.get()
             ui_results["group_view"] = group_view_var.get()
+            ui_results["folder_scope"] = folder_scope_var.get() if "folder_scope_var" in dir() else "checked"
             ui_results["auto_refresh"] = bool(auto_refresh_var.get())
             ui_results["show_hash"] = bool(show_hash_var.get())
             save_config(cfg)
