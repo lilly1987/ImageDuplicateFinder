@@ -187,13 +187,13 @@ def _export_duplicate_table_to_json(table_name):
     if not groups:
         return None
 
-    # tolerance_rate는 DB에 저장되어 있지 않으므로 config 기본값 사용
+    # tolerance는 DB에 저장되어 있지 않으므로 config 기본값 사용
     from results import resolve_search_options
-    _m, _h, aspect_ratio_tol, tolerance_rate = resolve_search_options()
+    _m, _h, aspect_ratio_tol, tolerance = resolve_search_options()
     if aspect_ratio_tol is None:
         aspect_ratio_tol = 0.01
-    if tolerance_rate is None:
-        tolerance_rate = 0.0039
+    if tolerance is None:
+        tolerance = 1
 
     data = {
         "saved_at": datetime.now().isoformat(),
@@ -201,7 +201,7 @@ def _export_duplicate_table_to_json(table_name):
             "method": method,
             "hash_size": hash_size,
             "aspect_ratio_tol": aspect_ratio_tol,
-            "tolerance_rate": tolerance_rate,
+            "tolerance": tolerance,
         },
         "groups": groups,
     }

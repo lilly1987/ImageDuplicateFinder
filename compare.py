@@ -161,7 +161,6 @@ def try_compare(folder_list):
     include_sub = compare_options["include_sub"]
     method = compare_options["method"]
     hash_size = compare_options["hash_size"]
-    tolerance_rate = compare_options["tolerance_rate"]
     tolerance = compare_options["tolerance"]
     duplicate_limit = compare_options["duplicate_limit"]
     max_compare_files = compare_options["max_compare_files"]
@@ -170,11 +169,11 @@ def try_compare(folder_list):
     save_duplicate_results = compare_options["save_duplicate_results"]
     use_compare_cache = compare_options["use_compare_cache"]
     aspect_ratio_tol = compare_options["aspect_ratio_tol"]
-    logger.info(f"Options: mode={search_mode}, include_sub={include_sub}, method={method}, hash_size={hash_size}, tolerance={tolerance} ({tolerance_rate}), duplicate_limit={duplicate_limit}, max_compare_files={max_compare_files}, max_hash_compute_files={max_hash_compute_files}, progress_log_interval={compare_progress_log_interval}, save_results={save_duplicate_results}, load_saved_results={compare_options['load_saved_results']}, auto_open={compare_options['auto_open_duplicate_results']}, use_compare_cache={use_compare_cache}")
+    logger.info(f"Options: mode={search_mode}, include_sub={include_sub}, method={method}, hash_size={hash_size}, tolerance={tolerance}, duplicate_limit={duplicate_limit}, max_compare_files={max_compare_files}, max_hash_compute_files={max_hash_compute_files}, progress_log_interval={compare_progress_log_interval}, save_results={save_duplicate_results}, load_saved_results={compare_options['load_saved_results']}, auto_open={compare_options['auto_open_duplicate_results']}, use_compare_cache={use_compare_cache}")
 
     # 이전 저장된 결과 로드
     if compare_options["load_saved_results"]:
-        groups = load_duplicate_results_json(method, hash_size, aspect_ratio_tol, tolerance_rate)
+        groups = load_duplicate_results_json(method, hash_size, aspect_ratio_tol, tolerance)
         if groups:
             logger.info(f"[bold cyan][알림] 이전 저장된 중복 결과 {len(groups)}개 그룹을 불러왔습니다.")
 
@@ -211,7 +210,6 @@ def try_compare(folder_list):
             use_compare_cache,
             start_time,
             aspect_ratio_tol,
-            tolerance_rate,
             compare_progress_log_interval,
         )
 
@@ -224,14 +222,14 @@ def try_compare(folder_list):
             # txt 결과 저장 여부 설정 (config의 save_txt_results, 기본 True)
             save_txt_results = options.get("save_txt_results", True)
             if save_txt_results:
-                result_path = write_result_file_if_any(method, hash_size, aspect_ratio_tol, tolerance_rate)
+                result_path = write_result_file_if_any(method, hash_size, aspect_ratio_tol, tolerance)
                 if result_path:
                     logger.info(f"[bold green][결과 저장][/bold green] {result_path}")
         except Exception:
             pass
 
         try:
-            json_path = save_duplicate_results_json(method, hash_size, aspect_ratio_tol, tolerance_rate)
+            json_path = save_duplicate_results_json(method, hash_size, aspect_ratio_tol, tolerance)
             if json_path and save_duplicate_results:
                 logger.info(f"[bold green][JSON 저장][/bold green] {json_path}")
         except Exception:

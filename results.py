@@ -17,47 +17,58 @@ from state import duplicate_pairs, duplicates_lock
 # ============================================================
 # 결과 파일 저장/로드 (JSON 호환 유지)
 # ============================================================
-def _search_options_suffix(method, hash_size, aspect_ratio_tol, tolerance_rate):
+def _search_options_suffix(method, hash_size, aspect_ratio_tol, tolerance):
     """검색 옵션 기반 파일명 접미사 생성"""
     ratio_str = str(round(aspect_ratio_tol, 4)).replace('.', 'p')
-    tol_str = str(round(tolerance_rate, 4)).replace('.', 'p')
+    tol_str = str(int(tolerance))
     return f"{method}_h{hash_size}_ratio{ratio_str}_tol{tol_str}"
 
 
-def duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance_rate):
+def duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance):
     """중복 결과 JSON 파일 경로"""
-    return f"duplicate_results_{_search_options_suffix(method, hash_size, aspect_ratio_tol, tolerance_rate)}.json"
+    return f"duplicate_results_{_search_options_suffix(method, hash_size, aspect_ratio_tol, tolerance)}.json"
 
 
-def resolve_search_options(method=None, hash_size=None, aspect_ratio_tol=None, tolerance_rate=None):
+def resolve_search_options(method=None, hash_size=None, aspect_ratio_tol=None, tolerance=None):
     """검색 옵션 해석 (기본값은 config에서)"""
-    if method is None or hash_size is None or aspect_ratio_tol is None or tolerance_rate is None:
+    if method is None or hash_size is None or aspect_ratio_tol is None or tolerance is None:
         from config import load_config
         options = load_config()
         method = method if method is not None else options.get("compare_method", "ahash")
         hash_size = hash_size if hash_size is not None else int(options.get("hash_size", 8))
         aspect_ratio_tol = aspect_ratio_tol if aspect_ratio_tol is not None else float(options.get("aspect_ratio_tolerance", 0.02))
-        tolerance_rate = tolerance_rate if tolerance_rate is not None else float(options.get("tolerance_rate", 0.05))
-    return method, int(hash_size), float(aspect_ratio_tol), float(tolerance_rate)
+        # tolerance_hamming(정수) 우선, 없으면 tolerance_rate(비율)에서 변환
+        tolerance_hamming = options.get("tolerance_hamming", None)
+        if tolerance_hamming is not None:
+            try:
+                tolerance_hamming = int(tolerance_hamming)
+            except Exception:
+                tolerance_hamming = None
+        if tolerance_hamming is not None:
+            tolerance = tolerance if tolerance is not None else max(0, min(hash_size * hash_size, tolerance_hamming))
+        else:
+            tolerance_rate = float(options.get("tolerance_rate", 0.0))
+            tolerance = tolerance if tolerance is not None else max(0, min(hash_size * hash_size, int(round(tolerance_rate * hash_size * hash_size))))
+    return method, int(hash_size), float(aspect_ratio_tol), int(tolerance)
 
 
-def format_result_filename(method, hash_size, aspect_ratio_tol, tolerance_rate):
+def format_result_filename(method, hash_size, aspect_ratio_tol, tolerance):
     """결과 텍스트 파일명 생성"""
-    return f"result_{_search_options_suffix(method, hash_size, aspect_ratio_tol, tolerance_rate)}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    return f"result_{_search_options_suffix(method, hash_size, aspect_ratio_tol, tolerance)}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
 
 
-def write_result_file_if_any(method, hash_size, aspect_ratio_tol, tolerance_rate):
+def write_result_file_if_any(method, hash_size, aspect_ratio_tol, tolerance):
     """중복 결과를 텍스트 파일로 저장"""
     with duplicates_lock:
         pairs = set(duplicate_pairs)
     if not pairs:
         return None
     groups = build_groups(pairs)
-    fn = format_result_filename(method, hash_size, aspect_ratio_tol, tolerance_rate)
+    fn = format_result_filename(method, hash_size, aspect_ratio_tol, tolerance)
     path = os.path.join(os.getcwd(), fn)
     try:
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write(f"Search Options: method={method}, hash_size={hash_size}, aspect_ratio_tol={aspect_ratio_tol}, tolerance_rate={tolerance_rate}\n")
+            fh.write(f"Search Options: method={method}, hash_size={hash_size}, aspect_ratio_tol={aspect_ratio_tol}, tolerance={tolerance}\n")
             fh.write("\n")
             for i, g in enumerate(groups, start=1):
                 fh.write(f"Group {i}:\n")
@@ -69,10 +80,10 @@ def write_result_file_if_any(method, hash_size, aspect_ratio_tol, tolerance_rate
         return None
 
 
-def save_duplicate_results_json(method=None, hash_size=None, aspect_ratio_tol=None, tolerance_rate=None):
+def save_duplicate_results_json(method=None, hash_size=None, aspect_ratio_tol=None, tolerance=None):
     """중복 결과를 JSON 파일로 저장"""
-    method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options(
-        method, hash_size, aspect_ratio_tol, tolerance_rate
+    method, hash_size, aspect_ratio_tol, tolerance = resolve_search_options(
+        method, hash_size, aspect_ratio_tol, tolerance
     )
     with duplicates_lock:
         if not duplicate_pairs:
@@ -84,11 +95,11 @@ def save_duplicate_results_json(method=None, hash_size=None, aspect_ratio_tol=No
             "method": method,
             "hash_size": hash_size,
             "aspect_ratio_tol": aspect_ratio_tol,
-            "tolerance_rate": tolerance_rate,
+            "tolerance": tolerance,
         },
         "groups": [sorted(list(g)) for g in groups],
     }
-    path = duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance_rate)
+    path = duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance)
     try:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False, indent=2)
@@ -117,17 +128,30 @@ def _parse_duplicate_text_file(path):
         return []
 
 
-def _load_groups_from_json(path, method, hash_size, aspect_ratio_tol, tolerance_rate):
+def _load_groups_from_json(path, method, hash_size, aspect_ratio_tol, tolerance):
     """JSON 결과 파일에서 그룹 로드"""
     with open(path, "r", encoding="utf-8") as fh:
         data = json.load(fh)
     saved_options = data.get("search_options")
     if saved_options:
+        # 저장된 tolerance가 정수(int)인지 구버전 비율(float tolerance_rate)인지 호환 처리
+        saved_tol_raw = saved_options.get("tolerance", saved_options.get("tolerance_rate"))
+        try:
+            if isinstance(saved_tol_raw, (int, float)) and not isinstance(saved_tol_raw, bool):
+                if float(saved_tol_raw).is_integer():
+                    saved_tol = int(saved_tol_raw)
+                else:
+                    # 구버전: 비율(ratio) → 정수 해밍 거리로 변환
+                    saved_tol = int(round(float(saved_tol_raw) * hash_size * hash_size))
+            else:
+                saved_tol = -1
+        except Exception:
+            saved_tol = -1
         if (
             saved_options.get("method") != method
             or int(saved_options.get("hash_size", -1)) != hash_size
             or round(float(saved_options.get("aspect_ratio_tol", -1)), 4) != round(aspect_ratio_tol, 4)
-            or round(float(saved_options.get("tolerance_rate", -1)), 4) != round(tolerance_rate, 4)
+            or saved_tol != int(tolerance)
         ):
             return None
     groups = data.get("groups", [])
@@ -142,13 +166,13 @@ def _load_groups_from_json(path, method, hash_size, aspect_ratio_tol, tolerance_
     return groups
 
 
-def load_duplicate_results_json(method=None, hash_size=None, aspect_ratio_tol=None, tolerance_rate=None):
+def load_duplicate_results_json(method=None, hash_size=None, aspect_ratio_tol=None, tolerance=None):
     """
     중복 결과 로드.
     우선순위: DB → JSON 파일 → 텍스트 파일
     """
-    method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options(
-        method, hash_size, aspect_ratio_tol, tolerance_rate
+    method, hash_size, aspect_ratio_tol, tolerance = resolve_search_options(
+        method, hash_size, aspect_ratio_tol, tolerance
     )
 
     # 1. DB에서 로드 (실패 시 JSON 파일로 폴백)
@@ -160,17 +184,17 @@ def load_duplicate_results_json(method=None, hash_size=None, aspect_ratio_tol=No
         pass
 
     # 2. JSON 파일에서 로드
-    json_path = duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance_rate)
+    json_path = duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance)
     if os.path.exists(json_path):
         try:
-            groups = _load_groups_from_json(json_path, method, hash_size, aspect_ratio_tol, tolerance_rate)
+            groups = _load_groups_from_json(json_path, method, hash_size, aspect_ratio_tol, tolerance)
             if groups is not None:
                 return groups
         except Exception:
             pass
 
     # 3. 텍스트 파일에서 로드
-    suffix = _search_options_suffix(method, hash_size, aspect_ratio_tol, tolerance_rate)
+    suffix = _search_options_suffix(method, hash_size, aspect_ratio_tol, tolerance)
     txt_pattern = f"result_{suffix}_*.txt"
     txt_files = sorted(glob.glob(txt_pattern), key=os.path.getmtime, reverse=True)
     for txt_path in txt_files:

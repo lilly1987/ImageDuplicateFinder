@@ -136,13 +136,20 @@ def show_options(root, lang):
     tk.Label(tol_header, text=lang["ui"].get("tolerance_rate", "허용 오차 (해밍 거리)"), font=("Arial", 10, "bold")).pack(side="left")
     use_tolerance_var = tk.BooleanVar(value=config.get("use_tolerance", True))
     tk.Checkbutton(tol_header, text=lang["ui"].get("use_check", "사용"), variable=use_tolerance_var).pack(side="left", padx=(8, 0))
-    # 기존 tolerance_rate(비율)를 정수 해밍 거리로 변환
+    # tolerance_hamming(정수) 우선, 없으면 기존 tolerance_rate(비율)에서 변환
     current_hash_size = int(size_var.get())
-    current_rate = float(config.get("tolerance_rate", 0.05))
-    # 비율 → 정수 해밍 거리로 변환
-    default_hamming = max(0, min(current_hash_size * current_hash_size, int(round(current_rate * current_hash_size * current_hash_size))))
-    # 이미 정수로 저장된 경우 (tolerance_hamming)
-    rate_var = tk.IntVar(value=config.get("tolerance_hamming", default_hamming))
+    config_hamming = config.get("tolerance_hamming", None)
+    if config_hamming is not None:
+        try:
+            default_hamming = int(config_hamming)
+        except Exception:
+            default_hamming = None
+    else:
+        default_hamming = None
+    if default_hamming is None:
+        current_rate = float(config.get("tolerance_rate", 0.0))
+        default_hamming = max(0, min(current_hash_size * current_hash_size, int(round(current_rate * current_hash_size * current_hash_size))))
+    rate_var = tk.IntVar(value=default_hamming)
     tk.Entry(scrollable_frame, textvariable=rate_var).pack(anchor="w")
     tk.Label(scrollable_frame, text="해시 값이 몇 비트까지 달라도 중복으로 판정할지 정수로 입력합니다. (예: 0 = 완전히 같은 해시만, 2 = 비트 2개까지 허용) 체크 해제 시 완전히 같은 해시만 중복으로 판정합니다.", fg="gray", wraplength=550, justify="left").pack(anchor="w", fill="x")
 
@@ -209,11 +216,8 @@ def show_options(root, lang):
         config["compare_method"] = method_var.get()
         config["hash_size"] = size_var.get()
         # 정수 해밍 거리를 tolerance_hamming으로 저장
-        # 기존 tolerance_rate(비율)도 역산하여 저장 (하위 호환)
         hamming = rate_var.get()
         config["tolerance_hamming"] = hamming
-        hs = size_var.get()
-        config["tolerance_rate"] = (hamming / (hs * hs)) if hs > 0 else 0.0
         config["duplicate_limit_count"] = duplicate_limit_var.get()
         config["hash_precompute_batch_size"] = batch_size_var.get()
         config["max_hash_compute_files"] = max_hash_compute_var.get()

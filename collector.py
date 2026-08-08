@@ -24,15 +24,16 @@ def _resolve_compare_options(options):
     include_sub = options.get("include_subfolders", "include") == "include"
     method = options.get("compare_method", "ahash")
     hash_size = int(options.get("hash_size", 8))
-    tolerance_rate = float(options.get("tolerance_rate", 0.05))
-    # tolerance_hamming(정수 해밍 거리)이 있으면 우선 사용, 없으면 tolerance_rate에서 변환
+    # tolerance_hamming(정수 해밍 거리)을 기본값으로 사용
     tolerance_hamming = options.get("tolerance_hamming", None)
     if tolerance_hamming is not None:
         try:
             tolerance = max(0, min(hash_size * hash_size, int(tolerance_hamming)))
         except Exception:
-            tolerance = max(0, min(hash_size * hash_size, int(round(tolerance_rate * hash_size * hash_size))))
+            tolerance = 0
     else:
+        # 하위 호환: tolerance_rate(비율)에서 변환
+        tolerance_rate = float(options.get("tolerance_rate", 0.0))
         tolerance = max(0, min(hash_size * hash_size, int(round(tolerance_rate * hash_size * hash_size))))
     duplicate_limit = options.get("duplicate_limit_count", 1000)
     try:
@@ -110,7 +111,6 @@ def _resolve_compare_options(options):
         "include_sub": include_sub,
         "method": method,
         "hash_size": hash_size,
-        "tolerance_rate": tolerance_rate,
         "tolerance": tolerance,
         "duplicate_limit": duplicate_limit,
         "max_compare_files": max_compare_files,
@@ -801,7 +801,7 @@ def _run_hash_compare_pipeline(search_mode, folders, include_sub, options, metho
 # ============================================================
 # 비교 실행 분기 (메인 로직)
 # ============================================================
-def _run_compare_branch(search_mode, folders, include_sub, options, method, hash_size, tolerance, duplicate_limit, max_compare_files, max_hash_compute_files, use_compare_cache, start_time, aspect_ratio_tol, tolerance_rate, compare_progress_log_interval=0):
+def _run_compare_branch(search_mode, folders, include_sub, options, method, hash_size, tolerance, duplicate_limit, max_compare_files, max_hash_compute_files, use_compare_cache, start_time, aspect_ratio_tol, compare_progress_log_interval=0):
     """비교 실행 분기 - 해시-비교 동시 파이프라인 사용"""
     logger.info(f"[bold cyan]{search_mode} 모드[/bold cyan]")
     if aspect_ratio_tol is not None and aspect_ratio_tol < 1.0:

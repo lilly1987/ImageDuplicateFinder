@@ -174,13 +174,20 @@ def show_duplicate_results_window(root, lang, folder_list=None):
                 _method = _search_opts.get("method")
                 _hash_size = _search_opts.get("hash_size")
                 _ratio = _search_opts.get("aspect_ratio_tol")
-                _tol = _search_opts.get("tolerance_rate")
+                _tol = _search_opts.get("tolerance")
+                if _tol is None:
+                    # 구버전 호환: tolerance_rate(비율) → 정수 해밍 거리
+                    _tol_raw = _search_opts.get("tolerance_rate")
+                    try:
+                        _tol = int(round(float(_tol_raw) * _hash_size * _hash_size)) if _tol_raw is not None else None
+                    except Exception:
+                        _tol = None
                 if _method and _hash_size is not None:
                     key = (_method, _hash_size, _ratio, _tol)
                     if key not in seen:
                         seen.add(key)
                         options.append(
-                            (f"{_method} / hash_size={_hash_size} / aspect_ratio_tol={_ratio} / tolerance_rate={_tol}",
+                            (f"{_method} / hash_size={_hash_size} / aspect_ratio_tol={_ratio} / tolerance={_tol}",
                              "json", _method, _hash_size, _ratio, _tol)
                         )
                     continue
@@ -199,14 +206,19 @@ def show_duplicate_results_window(root, lang, folder_list=None):
                     if hash_size_str.startswith("h") and ratio_str.startswith("ratio") and tol_str.startswith("tol"):
                         hash_size = int(hash_size_str[1:])
                         aspect_ratio_tol = float(ratio_str[5:].replace("p", "."))
-                        tolerance_rate = float(tol_str[3:].replace("p", "."))
-                        key = (method, hash_size, aspect_ratio_tol, tolerance_rate)
+                        tol_raw = tol_str[3:]
+                        # 새 형식(tol{int}) 또는 구버전 비율(tol0p000244140625) 모두 지원
+                        if "p" in tol_raw:
+                            tolerance = int(round(float(tol_raw.replace("p", ".")) * hash_size * hash_size))
+                        else:
+                            tolerance = int(tol_raw)
+                        key = (method, hash_size, aspect_ratio_tol, tolerance)
                         if key not in seen:
                             seen.add(key)
                             # 파일명에 groups 건수는 표시하지 않음 (로드 시 계산)
                             options.append(
-                                (f"{method} / hash_size={hash_size} / aspect_ratio_tol={aspect_ratio_tol} / tolerance_rate={tolerance_rate}",
-                                 "json", method, hash_size, aspect_ratio_tol, tolerance_rate)
+                                (f"{method} / hash_size={hash_size} / aspect_ratio_tol={aspect_ratio_tol} / tolerance={tolerance}",
+                                 "json", method, hash_size, aspect_ratio_tol, tolerance)
                             )
             except Exception:
                 pass
@@ -252,7 +264,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         if selected < 0 or not hasattr(search_combo, '_valid_options'):
             return
         item = search_combo._valid_options[selected]
-        source_type, method, hash_size, aspect_ratio_tol, tolerance_rate = item[1], item[2], item[3], item[4], item[5]
+        source_type, method, hash_size, aspect_ratio_tol, tolerance = item[1], item[2], item[3], item[4], item[5]
 
         # 실시간(진행 중) 선택 - 현재 검사 중인 옵션 기준
         if source_type == "live":
@@ -263,21 +275,21 @@ def show_duplicate_results_window(root, lang, folder_list=None):
                 current_hash_opts["method"] = None
                 current_hash_opts["hash_size"] = None
                 current_hash_opts["aspect_ratio_tol"] = None
-                current_hash_opts["tolerance_rate"] = None
+                current_hash_opts["tolerance"] = None
             return
 
         # JSON 파일 선택 - 해당 결과의 method/hash_size 기준
         if source_type == "json":
             from results import _load_groups_from_json, duplicate_results_json_path
-            json_path = duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance_rate)
-            groups = _load_groups_from_json(json_path, method, hash_size, aspect_ratio_tol, tolerance_rate)
+            json_path = duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance)
+            groups = _load_groups_from_json(json_path, method, hash_size, aspect_ratio_tol, tolerance)
             if groups:
                 _populate_tree(groups, live_label=False)
                 is_live_mode["value"] = False
                 current_hash_opts["method"] = method
                 current_hash_opts["hash_size"] = hash_size
                 current_hash_opts["aspect_ratio_tol"] = aspect_ratio_tol
-                current_hash_opts["tolerance_rate"] = tolerance_rate
+                current_hash_opts["tolerance"] = tolerance
             return
 
         # DB 테이블 선택 - 해당 결과의 method/hash_size 기준
@@ -290,7 +302,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
                 current_hash_opts["method"] = method
                 current_hash_opts["hash_size"] = hash_size
                 current_hash_opts["aspect_ratio_tol"] = None
-                current_hash_opts["tolerance_rate"] = None
+                current_hash_opts["tolerance"] = None
 
     search_combo.bind("<<ComboboxSelected>>", on_search_selected)
 
@@ -425,20 +437,20 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         "method": None,
         "hash_size": None,
         "aspect_ratio_tol": None,
-        "tolerance_rate": None,
+        "tolerance": None,
     }
 
     def _resolve_current_hash_opts():
         """현재 표시 중인 검색 결과의 해시 옵션 반환 (None 값은 config 기본값으로 대체)"""
-        method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
+        method, hash_size, aspect_ratio_tol, tolerance = resolve_search_options()
         if current_hash_opts["method"] and current_hash_opts["hash_size"]:
             method = current_hash_opts["method"]
             hash_size = current_hash_opts["hash_size"]
         if current_hash_opts.get("aspect_ratio_tol") is not None:
             aspect_ratio_tol = current_hash_opts["aspect_ratio_tol"]
-        if current_hash_opts.get("tolerance_rate") is not None:
-            tolerance_rate = current_hash_opts["tolerance_rate"]
-        return method, hash_size, aspect_ratio_tol, tolerance_rate
+        if current_hash_opts.get("tolerance") is not None:
+            tolerance = current_hash_opts["tolerance"]
+        return method, hash_size, aspect_ratio_tol, tolerance
 
     def is_checked(item_id):
         return tree.set(item_id, "checked") == "☑"
@@ -540,19 +552,19 @@ def show_duplicate_results_window(root, lang, folder_list=None):
 
     def _current_results_path():
         """현재 표시 중인 검색 결과의 JSON 파일 경로"""
-        method, hash_size, aspect_ratio_tol, tolerance_rate = _resolve_current_hash_opts()
-        return duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance_rate)
+        method, hash_size, aspect_ratio_tol, tolerance = _resolve_current_hash_opts()
+        return duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance)
 
     def save_duplicate_groups_json(groups):
         """복사본을 JSON 파일로 저장 (현재 표시 중인 검색 결과 기준)"""
-        method, hash_size, aspect_ratio_tol, tolerance_rate = _resolve_current_hash_opts()
+        method, hash_size, aspect_ratio_tol, tolerance = _resolve_current_hash_opts()
         data = {
             "saved_at": datetime.now().isoformat(),
             "search_options": {
                 "method": method,
                 "hash_size": hash_size,
                 "aspect_ratio_tol": aspect_ratio_tol,
-                "tolerance_rate": tolerance_rate,
+                "tolerance": tolerance,
             },
             "groups": groups,
         }
@@ -701,8 +713,8 @@ def show_duplicate_results_window(root, lang, folder_list=None):
 
     def load_results():
         """저장된 결과를 로드하여 복사본으로 작업"""
-        method, hash_size, aspect_ratio_tol, tolerance_rate = resolve_search_options()
-        groups = load_duplicate_results_json(method, hash_size, aspect_ratio_tol, tolerance_rate)
+        method, hash_size, aspect_ratio_tol, tolerance = resolve_search_options()
+        groups = load_duplicate_results_json(method, hash_size, aspect_ratio_tol, tolerance)
         if groups is None:
             messagebox.showinfo(lang["ui"].get("info", "정보"), lang["ui"].get("no_saved_results", "저장된 중복 검색 결과가 없습니다."), parent=win)
             win.lift()
@@ -713,7 +725,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         current_hash_opts["method"] = None
         current_hash_opts["hash_size"] = None
         current_hash_opts["aspect_ratio_tol"] = None
-        current_hash_opts["tolerance_rate"] = None
+        current_hash_opts["tolerance"] = None
         _populate_tree(groups, live_label=False)
         return saved_groups
 
@@ -1126,12 +1138,12 @@ def show_duplicate_results_window(root, lang, folder_list=None):
             method = current_hash_opts["method"]
             hash_size = current_hash_opts["hash_size"]
             aspect_ratio_tol = current_hash_opts.get("aspect_ratio_tol")
-            tolerance_rate = current_hash_opts.get("tolerance_rate")
-            if aspect_ratio_tol is not None and tolerance_rate is not None:
+            tolerance = current_hash_opts.get("tolerance")
+            if aspect_ratio_tol is not None and tolerance is not None:
                 # JSON 결과 다시 로드
                 from results import _load_groups_from_json
-                json_path = duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance_rate)
-                groups = _load_groups_from_json(json_path, method, hash_size, aspect_ratio_tol, tolerance_rate)
+                json_path = duplicate_results_json_path(method, hash_size, aspect_ratio_tol, tolerance)
+                groups = _load_groups_from_json(json_path, method, hash_size, aspect_ratio_tol, tolerance)
             else:
                 # DB 결과 다시 로드
                 from comparator import load_duplicate_results_from_db
