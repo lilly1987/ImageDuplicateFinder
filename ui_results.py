@@ -520,6 +520,32 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         if os.path.isdir(folder_path):
             os.startfile(folder_path)
 
+    def open_group_folders():
+        """선택된 그룹의 각 파일이 포함된 폴더를 탐색기로 열기 (동일 폴더 중복 개방 방지)"""
+        selected = tree.selection()
+        if not selected:
+            return
+        item_id = selected[0]
+        parent_id = tree.parent(item_id)
+        if parent_id:
+            group_index = _get_group_index(parent_id)
+        else:
+            group_index = _get_group_index(item_id)
+        if not (0 <= group_index < len(saved_groups)):
+            return
+        group = saved_groups[group_index]
+        seen = set()
+        for file_path in group:
+            folder = os.path.normpath(os.path.dirname(file_path))
+            if folder in seen:
+                continue
+            seen.add(folder)
+            if os.path.isdir(folder):
+                try:
+                    os.startfile(folder)
+                except Exception:
+                    pass
+
     def open_file(file_path):
         if os.path.isfile(file_path):
             os.startfile(file_path)
@@ -1117,6 +1143,10 @@ def show_duplicate_results_window(root, lang, folder_list=None):
     invert_btn = tk.Button(button_bar, text=lang["ui"].get("invert_selection", "선택 항목 반전"), command=invert_selection)
     invert_btn.pack(side="left")
     add_tooltip(invert_btn, lang["ui"].get("tooltip_invert_selection", ""))
+
+    open_group_folders_btn = tk.Button(button_bar, text=lang["ui"].get("open_group_folders", "그룹 폴더 열기"), command=open_group_folders)
+    open_group_folders_btn.pack(side="left")
+    add_tooltip(open_group_folders_btn, lang["ui"].get("tooltip_open_group_folders", ""))
 
     def refresh_results():
         """새로고침: 삭제/제거한 항목을 원본에 반영 후 원본에서 다시 복사해오기"""
