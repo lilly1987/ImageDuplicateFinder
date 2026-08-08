@@ -19,6 +19,7 @@ from folder_list import (
 )
 from compare import try_compare, request_stop, reset_stop
 from logger import logger
+from shortcuts import register_action, apply_shortcuts
 
 
 # ============================================================
@@ -261,6 +262,31 @@ def main():
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)
+
+    # ============================================================
+    # 단축키 등록 및 적용 (메인 창)
+    # ============================================================
+    register_action("add_folder",
+        lambda: add_folder(root, folder_list, update_count,
+                           all_apply_var, last_depth_cache, lang, count_label))
+    register_action("clear_list",
+        lambda: clear_list(folder_list, update_count, lang, count_label))
+    register_action("remove_empty_folders",
+        lambda: remove_empty_folders(folder_list, update_count, lang, count_label))
+    register_action("options",
+        lambda: show_single_window("options", show_options, root, lang))
+    register_action("compare", start_compare_thread)
+    register_action("stop", on_stop_click)
+    register_action("results",
+        lambda: show_single_window("results", show_duplicate_results_window, root, lang, folder_list))
+    register_action("settings",
+        lambda: show_single_window("settings", show_settings_window, root, lang))
+    register_action("db_manager",
+        lambda: show_single_window("db_manager", show_db_manager_window, root, lang))
+    register_action("refresh_cache", lambda: update_cache_ui(verbose=True))
+
+    apply_shortcuts(root, config, "main")
+
     root.mainloop()
 
 

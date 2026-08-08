@@ -26,6 +26,7 @@ from compare import (
 )
 from tooltip import add_tooltip
 from logger import logger
+from shortcuts import register_action, apply_shortcuts, unbind_shortcuts
 
 
 def show_duplicate_results_window(root, lang, folder_list=None):
@@ -1184,27 +1185,15 @@ def show_duplicate_results_window(root, lang, folder_list=None):
     refresh_btn.pack(side="left")
     add_tooltip(refresh_btn, lang["ui"].get("tooltip_refresh_results", ""))
 
-    def on_delete_key(event):
-        remove_selected_items()
-        return "break"
-
-    def on_shift_delete_key(event):
-        delete_selected_files()
-        return "break"
-
+    # ── 트리 전용 바인딩 (단축키가 아닌 동작) ──
+    # 삭제/그룹폴더열기 등 버튼 단축키는 shortcuts.apply_shortcuts가 관리
     tree.bind("<<TreeviewSelect>>", show_selected_preview)
     tree.bind("<Button-1>", on_tree_click)
     tree.bind("<Double-1>", on_tree_double_click)
     tree.bind("<Button-3>", on_tree_right_click)
     tree.bind("<space>", on_tree_space)
-    tree.bind("<Delete>", on_delete_key)
-    tree.bind("<Shift-Delete>", on_shift_delete_key)
     tree.bind("<Control-c>", _copy_selected_paths)
     win.bind("<Control-c>", _copy_selected_paths)
-    tree.bind("<Control-d>", lambda e: open_group_folders())
-    win.bind("<Control-d>", lambda e: open_group_folders())
-    win.bind("<Delete>", on_delete_key)
-    win.bind("<Shift-Delete>", on_shift_delete_key)
 
     # ============================================================
     # 실시간 중복 그룹 갱신 (백그라운드 스레드 + UI 스레드 분리)
@@ -1440,5 +1429,37 @@ def show_duplicate_results_window(root, lang, folder_list=None):
 
     # 창이 닫힐 때: 실시간 갱신 중지 + 변경사항 원본 반영
     win.bind("<Destroy>", _on_destroy)
+
+    # ============================================================
+    # 단축키 등록 및 적용 (결과창) - 활성화된 결과창에서만 동작
+    # ============================================================
+    register_action("remove_missing", remove_missing_files)
+    register_action("remove_selected", lambda: remove_selected_items())
+    register_action("delete_selected", lambda: delete_selected_files())
+    register_action("select_all", select_all)
+    register_action("deselect_all", deselect_all)
+    register_action("invert_selection", invert_selection)
+    register_action("open_group_folders", open_group_folders)
+    register_action("refresh_results", refresh_results)
+
+    from config import load_config as _results_shortcuts_config
+    _sc_cfg = _results_shortcuts_config() or {}
+    apply_shortcuts(win, _sc_cfg, "results")
+
+    # 닫힐 때 단축키 해제 및 콜백 정리 (별도 바인딩으로 중복 실행 방지)
+    def _cleanup_shortcuts(event):
+        if event.widget != win:
+            return
+        try:
+            unbind_shortcuts(win, "results")
+        except Exception:
+            pass
+        for k in ("remove_missing", "remove_selected", "delete_selected",
+                  "select_all", "deselect_all", "invert_selection",
+                  "open_group_folders", "refresh_results"):
+            from shortcuts import unregister_action
+            unregister_action(k)
+
+    win.bind("<Destroy>", _cleanup_shortcuts, add="+")
 
     return win

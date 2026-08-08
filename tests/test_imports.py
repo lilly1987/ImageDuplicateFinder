@@ -87,6 +87,13 @@ except Exception as e:
     print(f"FAIL: ui_options -> {type(e).__name__}: {e}")
     sys.exit(1)
 
+try:
+    import shortcuts
+    print("OK: shortcuts")
+except Exception as e:
+    print(f"FAIL: shortcuts -> {type(e).__name__}: {e}")
+    sys.exit(1)
+
 # compare.py에서 re-export된 이름들 확인
 print("\nChecking compare.py re-exports...")
 re_export_names = [

@@ -67,6 +67,14 @@ REQUIRED_KEYS = {
     "view_cache": "View",
     "clear_cache": "Clear",
     "drop_db": "Delete DB",
+    # 단축키 설정 UI
+    "keyboard_shortcuts": "Keyboard Shortcuts",
+    "shortcuts_group_main": "Main Window",
+    "shortcuts_group_results": "Results Window",
+    "shortcut_duplicate_warning": "Duplicate shortcut keys: ",
+    "shortcut_duplicate_title": "Duplicate Shortcut",
+    "reset_shortcuts": "Reset Shortcuts",
+    "cache_refresh": "Refresh Cache",
     # 툴팁
     "tooltip_add_folder": "Add a folder to the search list. You can drag and drop folders here.",
     "tooltip_clear_list": "Remove all folders from the search list.",
