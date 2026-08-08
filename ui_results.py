@@ -1201,6 +1201,8 @@ def show_duplicate_results_window(root, lang, folder_list=None):
     tree.bind("<Shift-Delete>", on_shift_delete_key)
     tree.bind("<Control-c>", _copy_selected_paths)
     win.bind("<Control-c>", _copy_selected_paths)
+    tree.bind("<Control-d>", lambda e: open_group_folders())
+    win.bind("<Control-d>", lambda e: open_group_folders())
     win.bind("<Delete>", on_delete_key)
     win.bind("<Shift-Delete>", on_shift_delete_key)
 
