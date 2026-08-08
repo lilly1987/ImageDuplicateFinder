@@ -15,7 +15,7 @@ from folder_list import (
     create_folder_list, create_count_label,
     add_folder, drop, clear_list, delete_selected, update_count,
     save_folder_list, load_folder_list,
-    get_checked_folders,
+    get_checked_folders, remove_empty_folders,
 )
 from compare import try_compare, request_stop, reset_stop
 from logger import logger
@@ -146,6 +146,11 @@ def main():
               command=lambda: clear_list(folder_list, update_count, lang, count_label))
     clear_list_btn.pack(side="left")
     add_tooltip(clear_list_btn, lang["ui"].get("tooltip_clear_list", ""))
+
+    remove_empty_btn = tk.Button(button_frame, text=lang["ui"]["remove_empty_folders"],
+              command=lambda: remove_empty_folders(folder_list, update_count, lang, count_label))
+    remove_empty_btn.pack(side="left")
+    add_tooltip(remove_empty_btn, lang["ui"].get("tooltip_remove_empty_folders", ""))
 
     options_btn = tk.Button(button_frame, text=lang["ui"]["options_button"],
                   command=lambda: show_single_window("options", show_options, root, lang))

@@ -330,6 +330,79 @@ def get_all_folders(folder_list):
     return [tree.set(iid, "path") for iid in all_ids]
 
 
+def _has_files_recursive(folder):
+    """폴더(하위 포함)에 파일이 하나라도 있는지 검사"""
+    try:
+        for _, _, files in os.walk(folder):
+            if files:
+                return True
+    except (PermissionError, OSError):
+        pass
+    return False
+
+
+def remove_empty_folders(folder_list, update_count, lang, count_label):
+    """목록에서 하위 폴더 포함 파일이 없는 빈 폴더를 디스크에서 삭제하고 목록에서도 제거"""
+    from tkinter import messagebox
+    import shutil
+    tree = folder_list._tree
+    # 표시 중인 항목 + detach된 항목 모두 포함
+    all_ids = list(tree.get_children()) + list(getattr(folder_list, "_detached", set()))
+
+    empty_folders = []
+    for iid in all_ids:
+        path = tree.set(iid, "path")
+        if not os.path.isdir(path):
+            continue
+        if not _has_files_recursive(path):
+            empty_folders.append((iid, path))
+
+    if not empty_folders:
+        messagebox.showinfo(
+            lang["ui"].get("info", "정보"),
+            lang["ui"].get("no_empty_folders", "빈 폴더가 없습니다."),
+        )
+        return
+
+    # 확인 대화상자
+    preview = "\n".join(p for _, p in empty_folders[:15])
+    if len(empty_folders) > 15:
+        preview += f"\n... 외 {len(empty_folders) - 15}개"
+    confirm = messagebox.askyesno(
+        lang["ui"].get("confirm", "확인"),
+        lang["ui"].get(
+            "delete_empty_folders_confirm",
+            "파일이 없는 빈 폴더 {count}개를 삭제하시겠습니까?",
+        ).format(count=len(empty_folders))
+        + "\n\n" + preview,
+    )
+    if not confirm:
+        return
+
+    deleted = 0
+    for iid, path in empty_folders:
+        try:
+            shutil.rmtree(path)
+            deleted += 1
+        except Exception:
+            pass
+        # 목록에서도 제거
+        try:
+            tree.delete(iid)
+        except Exception:
+            pass
+        folder_list._detached.discard(iid)
+
+    update_count(folder_list, lang, count_label)
+    messagebox.showinfo(
+        lang["ui"].get("info", "정보"),
+        lang["ui"].get(
+            "delete_empty_folders_done",
+            "빈 폴더 {count}개를 삭제했습니다.",
+        ).format(count=deleted),
+    )
+
+
 def get_filtered_checked_folders(folder_list):
     """필터를 적용한 후 체크된 폴더 경로 목록 반환"""
     tree = folder_list._tree
