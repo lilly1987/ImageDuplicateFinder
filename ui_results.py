@@ -684,19 +684,33 @@ def show_duplicate_results_window(root, lang, folder_list=None):
         view_mode = group_view_var.get() if "group_view_var" in dir() else "all"
         folder_mode = folder_filter_var.get() if "folder_filter_var" in dir() else "전체 보기"
 
-        for group_id, child_ids in all_group_tree_nodes:
+        # 라이브 갱신 등으로 트리가 재구성되는 동안 all_group_tree_nodes에 이미
+        # 삭제된(존재하지 않는) 노드가 남을 수 있으므로, 각 노드 존재 여부를 확인하며
+        # 건너뛴다. (스냅샷 순회로 순회 중 리스트가 clear()되어도 안전)
+        for group_id, child_ids in list(all_group_tree_nodes):
+            # 그룹 노드가 이미 삭제되었으면 해당 그룹은 건너뜀
+            if not tree.exists(group_id):
+                continue
             group_visible = False
             has_checked = False
             group_dirs = set()
 
             # 자식 항목 검사
             for child_id in child_ids:
-                path = tree.set(child_id, "path") or ""
+                if not tree.exists(child_id):
+                    continue
+                try:
+                    path = tree.set(child_id, "path") or ""
+                except Exception:
+                    continue
                 path_lower = path.lower()
                 if path:
                     group_dirs.add(os.path.dirname(path))
 
-                is_chk = is_checked(child_id)
+                try:
+                    is_chk = is_checked(child_id)
+                except Exception:
+                    is_chk = False
                 if is_chk:
                     has_checked = True
 
