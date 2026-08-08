@@ -387,6 +387,19 @@ def show_duplicate_results_window(root, lang, folder_list=None):
     preview_inner.bind("<Configure>", _on_preview_config)
     preview_canvas.bind("<Configure>", _on_canvas_config)
 
+    # 미리보기 캔버스 마우스 휠 스크롤 지원
+    def _on_preview_mousewheel(event):
+        preview_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _bind_preview_mousewheel(event):
+        preview_canvas.bind_all("<MouseWheel>", _on_preview_mousewheel)
+
+    def _unbind_preview_mousewheel(event):
+        preview_canvas.unbind_all("<MouseWheel>")
+
+    preview_canvas.bind("<Enter>", _bind_preview_mousewheel)
+    preview_canvas.bind("<Leave>", _unbind_preview_mousewheel)
+
     preview_images = []
     # 미리보기 이미지 캐시: {(path, mtime, size): PIL.Image} - 재클릭 시 재사용
     _preview_image_cache = {}
@@ -1387,6 +1400,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
             stop_live_refresh()
             apply_changes_on_close()
             _save_results_settings()
+            preview_canvas.unbind_all("<MouseWheel>")
 
     # 창이 닫힐 때: 실시간 갱신 중지 + 변경사항 원본 반영
     win.bind("<Destroy>", _on_destroy)
