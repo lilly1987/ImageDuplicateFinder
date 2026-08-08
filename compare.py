@@ -77,6 +77,7 @@ from collector import (
     select_incremental_compare_targets,
     select_hash_precompute_targets,
     _prepare_incremental_targets,
+    _check_compare_options_changed,
     _accumulate_compare_progress,
     _describe_hash_precompute_targets,
     _calculate_log_interval,
@@ -290,7 +291,8 @@ __all__ = [
     # collector
     "_resolve_compare_options", "_collect_files_for_mode", "_apply_max_compare_files",
     "select_incremental_compare_targets", "select_hash_precompute_targets",
-    "_prepare_incremental_targets", "_accumulate_compare_progress",
+    "_prepare_incremental_targets", "_check_compare_options_changed",
+    "_accumulate_compare_progress",
     "_describe_hash_precompute_targets", "_calculate_log_interval",
     "_estimate_compare_total_pairs", "_run_compare_branch",
     # results

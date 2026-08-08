@@ -228,11 +228,13 @@ def select_hash_precompute_targets(current_paths, previous_paths):
     return new_files
 
 
-def _prepare_incremental_targets(compare_file_paths, method, hash_size, tolerance=None, aspect_ratio_tol=None):
-    """증분 비교 대상 준비.
-
-    비교 옵션(tolerance, aspect_ratio_tol)이 이전 실행과 달라지면
+def _check_compare_options_changed(method, hash_size, tolerance, aspect_ratio_tol):
+    """비교 옵션(tolerance, aspect_ratio_tol)이 이전 실행과 달라지면
     처리 완료 목록(compare_progress)을 리셋해 전체 재비교를 유도한다.
+
+    ⚠ 반드시 _apply_max_compare_files 보다 먼저 호출해야 한다.
+    _apply_max_compare_files 가 compare_progress 를 조회해 신규 파일만 선별하므로,
+    옵션 변경에 따른 리셋이 먼저 반영되어야 필터가 전체 파일을 대상으로 동작한다.
     - 해밍 거리 캐시를 저장하므로 재비교는 재해시 없이 빠르게 수행된다.
     """
     params = {"tolerance": tolerance, "aspect_ratio_tol": aspect_ratio_tol}
@@ -243,6 +245,14 @@ def _prepare_incremental_targets(compare_file_paths, method, hash_size, toleranc
         reset_compare_progress(method, hash_size)
         set_last_compare_params(method, hash_size, params)
 
+
+def _prepare_incremental_targets(compare_file_paths, method, hash_size):
+    """증분 비교 대상 준비.
+
+    비교 옵션(tolerance, aspect_ratio_tol) 변경에 따른 compare_progress 리셋은
+    _run_hash_compare_pipeline 시작 시점에서 _check_compare_options_changed 를 통해
+    이미 처리된 상태이므로, 여기서는 대상 선별만 수행한다.
+    """
     processed_compare_files = get_processed_compare_files(method, hash_size)
     new_compare_files, baseline_compare_files = select_incremental_compare_targets(compare_file_paths, processed_compare_files)
     return set(new_compare_files), baseline_compare_files, new_compare_files
@@ -450,13 +460,19 @@ def _run_hash_compare_pipeline(search_mode, folders, include_sub, options, metho
     folder_files, all_target_files = _collect_files_for_mode(folders, include_sub, search_mode)
     logger.info(f"total={len(all_target_files)}")
     
+    # 비교 옵션(tolerance 등) 변경 감지 → 전체 재비교 유도
+    # (반드시 _apply_max_compare_files 보다 먼저 호출:
+    #  _apply_max_compare_files 가 compare_progress 를 조회해 신규 파일만 선별하므로,
+    #  리셋이 먼저 반영되어야 전체 파일이 대상에 포함됨)
+    _check_compare_options_changed(method, hash_size, tolerance, aspect_ratio_tol)
+    
     # max_compare_files 적용
     folder_files, all_target_files = _apply_max_compare_files(search_mode, folder_files, all_target_files, max_compare_files, method, hash_size)
     compare_file_paths = list(all_target_files)
     
-    # 증분 대상 준비 (비교 옵션 변경 시 전체 재비교 유도)
+    # 증분 대상 준비 (옵션 변경 시 전체 재비교 유도 - 리셋은 위에서 선행 처리됨)
     new_compare_files_set, baseline_compare_files, new_compare_files = _prepare_incremental_targets(
-        compare_file_paths, method, hash_size, tolerance=tolerance, aspect_ratio_tol=aspect_ratio_tol
+        compare_file_paths, method, hash_size
     )
     if baseline_compare_files:
         logger.info(f"[bold cyan][알림] 증분 비교 모드: 기준 파일 {len(baseline_compare_files)}개, 신규 파일 {len(new_compare_files)}개[/bold cyan]")
