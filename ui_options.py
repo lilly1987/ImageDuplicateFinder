@@ -26,6 +26,20 @@ def show_options(root, lang):
     canvas.pack(side="left", fill="both", expand=True)
     scrollbar.pack(side="right", fill="y")
 
+    # 마우스 휠 스크롤 지원
+    def _on_mousewheel(event):
+        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _bind_mousewheel(event):
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+    def _unbind_mousewheel(event):
+        canvas.unbind_all("<MouseWheel>")
+
+    canvas.bind("<Enter>", _bind_mousewheel)
+    canvas.bind("<Leave>", _unbind_mousewheel)
+    win.bind("<Destroy>", lambda e: canvas.unbind_all("<MouseWheel>") if e.widget == win else None)
+
     # --- 검색 모드 ---
     tk.Label(scrollable_frame, text=lang["ui"].get("search_mode", "검색 모드"), font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 2))
     mode_var = tk.StringVar(value=config.get("search_mode", "all_folders"))

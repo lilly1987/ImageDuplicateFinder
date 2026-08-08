@@ -40,7 +40,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
     # 검색 결과 선택 드롭다운
     tk.Label(control_bar, text="검색 결과:").pack(side="left", padx=(5, 2))
     search_var = tk.StringVar()
-    search_combo = ttk.Combobox(control_bar, textvariable=search_var, state="readonly", width=50)
+    search_combo = ttk.Combobox(control_bar, textvariable=search_var, state="readonly", width=70)
     search_combo.pack(side="left", padx=(0, 10))
     # DB 관리창에서 드롭다운 선택 연동을 위해 노출
     win._search_combo = search_combo
@@ -166,6 +166,27 @@ def show_duplicate_results_window(root, lang, folder_list=None):
 
         # 1. JSON 파일에서 추출 (예: duplicate_results_ahash_h16_ratio0p01_tol0p0039.json)
         for json_path in glob.glob("duplicate_results_*.json"):
+            # 1-a. JSON 파일 내부의 search_options 값을 우선 사용 (모든 옵션 표시)
+            try:
+                with open(json_path, "r", encoding="utf-8") as fh:
+                    _data = json.load(fh)
+                _search_opts = (_data or {}).get("search_options", {}) or {}
+                _method = _search_opts.get("method")
+                _hash_size = _search_opts.get("hash_size")
+                _ratio = _search_opts.get("aspect_ratio_tol")
+                _tol = _search_opts.get("tolerance_rate")
+                if _method and _hash_size is not None:
+                    key = (_method, _hash_size, _ratio, _tol)
+                    if key not in seen:
+                        seen.add(key)
+                        options.append(
+                            (f"{_method} / hash_size={_hash_size} / aspect_ratio_tol={_ratio} / tolerance_rate={_tol}",
+                             "json", _method, _hash_size, _ratio, _tol)
+                        )
+                    continue
+            except Exception:
+                pass
+            # 1-b. search_options가 없거나 파싱 실패 시 파일명 파싱으로 폴백
             try:
                 basename = os.path.splitext(os.path.basename(json_path))[0]
                 parts = basename.split("_")
@@ -184,7 +205,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
                             seen.add(key)
                             # 파일명에 groups 건수는 표시하지 않음 (로드 시 계산)
                             options.append(
-                                (f"[JSON] {method} / hash_size={hash_size} / tol={tolerance_rate}",
+                                (f"{method} / hash_size={hash_size} / aspect_ratio_tol={aspect_ratio_tol} / tolerance_rate={tolerance_rate}",
                                  "json", method, hash_size, aspect_ratio_tol, tolerance_rate)
                             )
             except Exception:
