@@ -45,6 +45,7 @@ ui:
   db_tab_hash_cache: "Hash Cache"
   db_tab_info: "DB Info/Backup"
   db_refresh: "Refresh"
+  db_loading: "Loading..."
   db_export_json: "Export JSON"
   db_delete_table: "Delete Table"
   db_open_results: "Open in Results"

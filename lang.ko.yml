@@ -46,6 +46,7 @@ ui:
   db_tab_hash_cache: "해시 캐시"
   db_tab_info: "DB 정보/백업"
   db_refresh: "새로고침"
+  db_loading: "로딩 중..."
   db_export_json: "JSON 내보내기"
   db_delete_table: "테이블 삭제"
   db_open_results: "결과창에서 열기"

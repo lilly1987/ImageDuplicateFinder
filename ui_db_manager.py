@@ -398,16 +398,23 @@ def show_db_manager_window(root, lang):
     result_info_label = tk.Label(tab_results, text="", anchor="w", fg="gray30")
     result_info_label.pack(side="bottom", fill="x", padx=5, pady=3)
 
+    # 로딩 플레이스홀더
+    result_loading_label = tk.Label(
+        result_tree_frame,
+        text=lang["ui"].get("db_loading", "로딩 중..."),
+        fg="gray50", font=("", 11),
+    )
+    result_loading_label.place(relx=0.5, rely=0.5, anchor="center")
+
     _result_table_data = []  # [(tree_iid, {"name":..., "base":..., "method":..., "hash_size":...})]
 
-    def _refresh_result_table_list():
-        """테이블 목록 새로고침"""
+    def _populate_result_table(stats):
+        """테이블 목록 데이터 바인딩 (stats 결과 사용)"""
         nonlocal _result_table_data
         for item in result_tree.get_children():
             result_tree.delete(item)
         _result_table_data.clear()
 
-        stats = _collect_table_stats()
         for t in stats["tables"]:
             if t["base"] != "duplicate_results":
                 continue
@@ -433,6 +440,11 @@ def show_db_manager_window(root, lang):
                 "hash_size": t["hash_size"],
             })
         result_info_label.config(text=f"{lang['ui'].get('db_table_count', '테이블 수')}: {len(_result_table_data)}")
+
+    def _refresh_result_table_list():
+        """테이블 목록 새로고침 (동기)"""
+        stats = _collect_table_stats()
+        _populate_result_table(stats)
 
     def _get_selected_table():
         """선택된 테이블 정보 반환"""
@@ -594,8 +606,6 @@ def show_db_manager_window(root, lang):
         except Exception as e:
             logger.error(f"[DB 관리] 결과창 열기 오류: {e}")
 
-    _refresh_result_table_list()
-
     # ==========================================================
     # 탭 2: 해시 캐시 관리
     # ==========================================================
@@ -664,12 +674,19 @@ def show_db_manager_window(root, lang):
     cache_tree.configure(yscrollcommand=cache_scroll.set)
     cache_scroll.pack(side="right", fill="y")
 
-    def _refresh_cache_stats():
-        """해시 캐시 통계 새로고침"""
+    # 로딩 플레이스홀더
+    cache_loading_label = tk.Label(
+        cache_tree_frame,
+        text=lang["ui"].get("db_loading", "로딩 중..."),
+        fg="gray50", font=("", 11),
+    )
+    cache_loading_label.place(relx=0.5, rely=0.5, anchor="center")
+
+    def _populate_cache_stats(stats):
+        """해시 캐시 통계 바인딩 (stats 결과 사용)"""
         for item in cache_tree.get_children():
             cache_tree.delete(item)
 
-        stats = _collect_table_stats()
         # (method, hash_size)별 집계 (용량 포함)
         agg = {}
         for t in stats["tables"]:
@@ -703,6 +720,11 @@ def show_db_manager_window(root, lang):
                 "해시 {h:,} / 비교 {c:,} / 진행 {p:,} / 중복 {d:,}",
             ).format(h=h_cnt, c=c_cnt, p=p_cnt, d=d_cnt)
         )
+
+    def _refresh_cache_stats():
+        """해시 캐시 통계 새로고침 (동기)"""
+        stats = _collect_table_stats()
+        _populate_cache_stats(stats)
 
     def _get_selected_hash_cache_list():
         """선택된 (method, hash_size) 목록 반환 (다중 선택 지원)"""
@@ -816,8 +838,6 @@ def show_db_manager_window(root, lang):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    _refresh_cache_stats()
-
     # ==========================================================
     # 탭 3: DB 정보 / 백업 / 복원
     # ==========================================================
@@ -827,7 +847,7 @@ def show_db_manager_window(root, lang):
     info_frame = tk.Frame(tab_info)
     info_frame.pack(fill="x", padx=10, pady=10)
 
-    db_size_label = tk.Label(info_frame, text="", anchor="w", font=("", 10, "bold"))
+    db_size_label = tk.Label(info_frame, text=lang["ui"].get("db_loading", "로딩 중..."), anchor="w", font=("", 10, "bold"), fg="gray50")
     db_size_label.grid(row=0, column=0, sticky="w")
 
     db_path_label = tk.Label(info_frame, text=f"  {os.path.abspath(DB_FILE)}", anchor="w", fg="gray")
@@ -906,9 +926,8 @@ def show_db_manager_window(root, lang):
     )
     restore_selected_btn.pack(pady=3)
 
-    def _refresh_info():
-        """DB 정보 새로고침"""
-        stats = _collect_table_stats()
+    def _populate_info(stats):
+        """DB 정보 바인딩 (stats 결과 사용)"""
         size_mb = stats["db_size"]
         db_size_label.config(
             text=lang["ui"].get("db_size_label", "DB 크기: {size:.2f} MB").format(size=size_mb)
@@ -934,6 +953,11 @@ def show_db_manager_window(root, lang):
                 backup_tree.insert("", "end", values=(name, f"{size:.1f} KB"))
             except Exception:
                 backup_tree.insert("", "end", values=(name, "?"))
+
+    def _refresh_info():
+        """DB 정보 새로고침 (동기)"""
+        stats = _collect_table_stats()
+        _populate_info(stats)
 
     def _do_backup():
         """DB 백업 실행"""
@@ -1031,6 +1055,28 @@ def show_db_manager_window(root, lang):
                 parent=win,
             )
 
-    _refresh_info()
+    # ============================================================
+    # 초기 데이터 로딩: 백그라운드 스레드에서 _collect_table_stats() 1회 호출
+    # ============================================================
+    def _on_initial_stats_loaded(stats):
+        """백그라운드 로딩 완료 시 콜백 — 메인 스레드에서 실행"""
+        # 로딩 플레이스홀더 숨김
+        result_loading_label.place_forget()
+        cache_loading_label.place_forget()
+        # 3개 탭 데이터 바인딩
+        _populate_result_table(stats)
+        _populate_cache_stats(stats)
+        _populate_info(stats)
+
+    def _initial_load_worker():
+        """백그라운드 스레드: DB 통계 수집 후 UI 업데이트 요청"""
+        try:
+            stats = _collect_table_stats()
+            win.after(0, lambda: _on_initial_stats_loaded(stats))
+        except Exception as e:
+            logger.error(f"[DB 관리] 초기 데이터 로딩 오류: {e}")
+            win.after(0, lambda: _on_initial_stats_loaded({"tables": [], "db_size": 0.0}))
+
+    threading.Thread(target=_initial_load_worker, daemon=True).start()
 
     return win
