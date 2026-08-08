@@ -81,6 +81,14 @@ def init_db():
             # 구 스키마(is_duplicate)의 compare_cache 테이블을 새 스키마(hamming_distance)로 전환
             _migrate_compare_cache_schema(cur, conn)
 
+            # 비교 메타데이터 테이블 (마지막 사용 비교 옵션 저장용)
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS compare_meta ("
+                " meta_key TEXT PRIMARY KEY,"
+                " meta_value TEXT"
+                ")"
+            )
+
             conn.commit()
         finally:
             conn.close()
@@ -104,6 +112,78 @@ def _migrate_compare_cache_schema(cur, conn):
             )
             cur.execute(f"DROP TABLE {table}")
     conn.commit()
+
+
+# ============================================================
+# 비교 메타데이터 (마지막 사용 비교 옵션 저장/비교)
+# ============================================================
+def get_last_compare_params(method, hash_size):
+    """마지막으로 비교 실행에 사용된 옵션(params dict)을 DB에서 조회. 없으면 None."""
+    key = f"last_compare_params_{method}_{hash_size}"
+    try:
+        import json
+    except Exception:
+        json = None
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT meta_value FROM compare_meta WHERE meta_key=?",
+                (key,)
+            )
+            row = cur.fetchone()
+        finally:
+            conn.close()
+    if row is None:
+        return None
+    if json is None:
+        return None
+    try:
+        return json.loads(row[0])
+    except Exception:
+        return None
+
+
+def set_last_compare_params(method, hash_size, params):
+    """마지막으로 사용된 비교 옵션(params dict)을 DB에 저장."""
+    key = f"last_compare_params_{method}_{hash_size}"
+    try:
+        import json
+        value = json.dumps(params)
+    except Exception:
+        value = str(params)
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS compare_meta ("
+                " meta_key TEXT PRIMARY KEY,"
+                " meta_value TEXT"
+                ")"
+            )
+            cur.execute(
+                "INSERT OR REPLACE INTO compare_meta (meta_key, meta_value) VALUES (?,?)",
+                (key, value)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def reset_compare_progress(method, hash_size):
+    """처리 완료 파일 목록(compare_progress)을 비워 다음 비교에서 전체 재비교를 유도."""
+    progress_table = _table_name("compare_progress", method, hash_size)
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
+        try:
+            cur = conn.cursor()
+            _ensure_tables_exist(cur, method, hash_size)
+            cur.execute(f"DELETE FROM {progress_table}")
+            conn.commit()
+        finally:
+            conn.close()
 
 
 def _migrate_single_tables_to_per_method(cur, conn):

@@ -10,6 +10,7 @@ import os
 from config import load_config
 from logger import logger
 from comparator import get_processed_compare_files, get_hash_prefix_bits, build_hash_buckets, collect_candidate_pairs, collect_candidate_pairs_bktree
+from database import get_last_compare_params, set_last_compare_params, reset_compare_progress
 from hasher import precompute_hashes, get_hash_compute_count
 from state import is_stop_requested
 
@@ -227,8 +228,21 @@ def select_hash_precompute_targets(current_paths, previous_paths):
     return new_files
 
 
-def _prepare_incremental_targets(compare_file_paths, method, hash_size):
-    """증분 비교 대상 준비"""
+def _prepare_incremental_targets(compare_file_paths, method, hash_size, tolerance=None, aspect_ratio_tol=None):
+    """증분 비교 대상 준비.
+
+    비교 옵션(tolerance, aspect_ratio_tol)이 이전 실행과 달라지면
+    처리 완료 목록(compare_progress)을 리셋해 전체 재비교를 유도한다.
+    - 해밍 거리 캐시를 저장하므로 재비교는 재해시 없이 빠르게 수행된다.
+    """
+    params = {"tolerance": tolerance, "aspect_ratio_tol": aspect_ratio_tol}
+    if get_last_compare_params(method, hash_size) != params:
+        logger.info(
+            "[bold cyan][알림] 허용 오차 등 비교 옵션이 변경되어 전체 재비교를 수행합니다.[/bold cyan]"
+        )
+        reset_compare_progress(method, hash_size)
+        set_last_compare_params(method, hash_size, params)
+
     processed_compare_files = get_processed_compare_files(method, hash_size)
     new_compare_files, baseline_compare_files = select_incremental_compare_targets(compare_file_paths, processed_compare_files)
     return set(new_compare_files), baseline_compare_files, new_compare_files
@@ -440,8 +454,10 @@ def _run_hash_compare_pipeline(search_mode, folders, include_sub, options, metho
     folder_files, all_target_files = _apply_max_compare_files(search_mode, folder_files, all_target_files, max_compare_files, method, hash_size)
     compare_file_paths = list(all_target_files)
     
-    # 증분 대상 준비
-    new_compare_files_set, baseline_compare_files, new_compare_files = _prepare_incremental_targets(compare_file_paths, method, hash_size)
+    # 증분 대상 준비 (비교 옵션 변경 시 전체 재비교 유도)
+    new_compare_files_set, baseline_compare_files, new_compare_files = _prepare_incremental_targets(
+        compare_file_paths, method, hash_size, tolerance=tolerance, aspect_ratio_tol=aspect_ratio_tol
+    )
     if baseline_compare_files:
         logger.info(f"[bold cyan][알림] 증분 비교 모드: 기준 파일 {len(baseline_compare_files)}개, 신규 파일 {len(new_compare_files)}개[/bold cyan]")
     elif new_compare_files:
