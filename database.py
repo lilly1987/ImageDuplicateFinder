@@ -78,9 +78,32 @@ def init_db():
                 logger.info("[bold cyan][알림] 기존 단일 테이블을 (method, hash_size)별 테이블로 마이그레이션합니다.[/bold cyan]")
                 _migrate_single_tables_to_per_method(cur, conn)
 
+            # 구 스키마(is_duplicate)의 compare_cache 테이블을 새 스키마(hamming_distance)로 전환
+            _migrate_compare_cache_schema(cur, conn)
+
             conn.commit()
         finally:
             conn.close()
+
+
+def _migrate_compare_cache_schema(cur, conn):
+    """
+    구 스키마(is_duplicate)의 compare_cache_* 테이블을 새 스키마(hamming_distance)로 전환.
+    - 기존 is_duplicate(0/1) 데이터는 실제 해밍 거리로 복원할 수 없으므로 삭제 후 재생성.
+    - 새 스키마(hamming_distance)를 이미 가진 테이블은 그대로 유지.
+    """
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'compare_cache_%'")
+    tables = [row[0] for row in cur.fetchall()]
+    for table in tables:
+        cur.execute(f"PRAGMA table_info({table})")
+        cols = {row[1] for row in cur.fetchall()}
+        if "hamming_distance" not in cols:
+            logger.info(
+                f"[bold cyan][알림] 구 스키마 compare_cache 테이블을 새 스키마로 전환합니다 "
+                f"(기존 비교 캐시는 해밍 거리로 복원 불가하여 삭제 후 재계산 필요): {table}[/bold cyan]"
+            )
+            cur.execute(f"DROP TABLE {table}")
+    conn.commit()
 
 
 def _migrate_single_tables_to_per_method(cur, conn):
@@ -100,15 +123,8 @@ def _migrate_single_tables_to_per_method(cur, conn):
                 f"INSERT OR REPLACE INTO {_table_name('hash_cache', method, hash_size)} (path, hash, mtime, size) VALUES (?,?,?,?)",
                 (path, hash_text, mtime, size)
             )
-        cur.execute(
-            "SELECT file1, file2, is_duplicate FROM compare_cache WHERE method=? AND hash_size=?",
-            (method, hash_size)
-        )
-        for file1, file2, is_dup in cur.fetchall():
-            cur.execute(
-                f"INSERT OR REPLACE INTO {_table_name('compare_cache', method, hash_size)} (file1, file2, is_duplicate) VALUES (?,?,?)",
-                (file1, file2, is_dup)
-            )
+        # (레거시 compare_cache의 is_duplicate 0/1 데이터는 실제 해밍 거리로
+        #  복원할 수 없으므로 마이그레이션하지 않고 폐기 - 새 스키마로 재계산 필요)
         cur.execute(
             "SELECT path FROM compare_progress WHERE method=? AND hash_size=?",
             (method, hash_size)
@@ -152,7 +168,7 @@ def _ensure_tables_exist(cur, method, hash_size):
     cur.execute(f"""CREATE TABLE IF NOT EXISTS {compare_table} (
         file1 TEXT,
         file2 TEXT,
-        is_duplicate INTEGER,
+        hamming_distance INTEGER,
         PRIMARY KEY (file1, file2)
     )""")
     cur.execute(f"""CREATE TABLE IF NOT EXISTS {progress_table} (
@@ -222,14 +238,14 @@ def _flush_db_writes():
             # compare_cache: (method, hash_size)별 테이블에 쓰기
             if compare_rows:
                 compare_groups = {}
-                for file1, file2, method, hash_size, is_dup in compare_rows:
+                for file1, file2, method, hash_size, hamming_dist in compare_rows:
                     key = (method, hash_size)
-                    compare_groups.setdefault(key, []).append((file1, file2, int(is_dup)))
+                    compare_groups.setdefault(key, []).append((file1, file2, int(hamming_dist)))
                 for (method, hash_size), rows in compare_groups.items():
                     _ensure_tables_exist(cur, method, hash_size)
                     table = _table_name("compare_cache", method, hash_size)
                     cur.executemany(
-                        f"REPLACE INTO {table} (file1, file2, is_duplicate) VALUES (?,?,?)",
+                        f"REPLACE INTO {table} (file1, file2, hamming_distance) VALUES (?,?,?)",
                         rows
                     )
 
@@ -275,10 +291,10 @@ def schedule_hash_cache_write(path, method, hash_size, hash_text, mtime, size):
     start_db_writer()
 
 
-def schedule_compare_record(file1, file2, method, hash_size, is_duplicate):
+def schedule_compare_record(file1, file2, method, hash_size, hamming_distance):
     """비교 결과 캐시 쓰기 예약"""
     with db_write_lock:
-        compare_write_queue.append((file1, file2, method, hash_size, int(is_duplicate)))
+        compare_write_queue.append((file1, file2, method, hash_size, int(hamming_distance)))
         if len(compare_write_queue) >= DB_WRITE_BATCH_SIZE:
             db_write_event.set()
     start_db_writer()

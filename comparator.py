@@ -62,7 +62,9 @@ def make_pair_key(file1, file2):
 
 def already_compared(file1, file2, method, hash_size):
     """
-    이미 비교된 파일 쌍인지 확인.
+    이미 비교된 파일 쌍의 해밍 거리(hamming_distance) 반환.
+    - 캐시에 없거나(미비교) 선로드 완료 상태에서 miss면 None 반환.
+    - 반환값: int(해밍 거리) 또는 None. 중복 여부는 호출자가 tolerance와 비교해 판정한다.
     - _compare_cache_loaded=True (선로드 완료): 메모리에서만 확인, miss면 None 반환 (DB 조회 없음)
     - _compare_cache_loaded=False: DB에서 조회
     """
@@ -86,11 +88,11 @@ def already_compared(file1, file2, method, hash_size):
             cur = conn.cursor()
             _ensure_tables_exist(cur, method, hash_size)
             cur.execute(
-                f"SELECT is_duplicate FROM {compare_table} WHERE file1=? AND file2=?",
+                f"SELECT hamming_distance FROM {compare_table} WHERE file1=? AND file2=?",
                 (f1, f2)
             )
             row = cur.fetchone()
-            result = bool(row[0]) if row else None
+            result = int(row[0]) if row else None
         finally:
             conn.close()
 
@@ -101,13 +103,13 @@ def already_compared(file1, file2, method, hash_size):
     return result
 
 
-def add_compare_record(file1, file2, method, hash_size, is_duplicate):
-    """비교 결과 저장 (메모리 캐시 + DB 비동기 쓰기)"""
+def add_compare_record(file1, file2, method, hash_size, hamming_distance):
+    """비교 결과 저장 (메모리 캐시 + DB 비동기 쓰기) - 해밍 거리(hamming_distance) 기준"""
     f1, f2 = make_pair_key(file1, file2)
     cache_key = (f1, f2, method, hash_size)
     with compare_memory_lock:
-        compare_memory_cache[cache_key] = bool(is_duplicate)
-    schedule_compare_record(f1, f2, method, hash_size, is_duplicate)
+        compare_memory_cache[cache_key] = int(hamming_distance)
+    schedule_compare_record(f1, f2, method, hash_size, hamming_distance)
 
 
 # ============================================================
@@ -429,16 +431,17 @@ def compare_files(file1, file2, method, hash_size, tolerance, verbose=False, use
         return 0, False
     item_start = time.perf_counter()
 
-    # 기존 비교 결과 확인
+    # 기존 비교 결과 확인 (캐시된 해밍 거리를 현재 tolerance와 비교해 재판정)
     if use_compare_cache:
-        cached_result = already_compared(file1, file2, method, hash_size)
-        if cached_result is not None:
+        cached_hamming = already_compared(file1, file2, method, hash_size)
+        if cached_hamming is not None:
             item_elapsed = (time.perf_counter() - item_start) * 1000
-            if cached_result:
+            cached_duplicate = int(cached_hamming) <= tolerance
+            if cached_duplicate:
                 logger.info(f"  [bold green][유사 발견][/bold green] [cyan]{file1}[/cyan] == [cyan]{file2}[/cyan] (캐시됨, {item_elapsed:.2f}ms)")
             elif verbose:
                 logger.info(f"  [dim][건별 비교][/dim] {os.path.basename(file1)} ↔ {os.path.basename(file2)}: [yellow]{item_elapsed:.2f}ms[/yellow] [dim](캐시됨)[/dim]")
-            return item_elapsed, cached_result
+            return item_elapsed, cached_duplicate
 
     # 해시값 얻기
     if hashes is not None:
@@ -459,9 +462,9 @@ def compare_files(file1, file2, method, hash_size, tolerance, verbose=False, use
     diff = h1 - h2
     is_duplicate = diff <= tolerance
 
-    # 결과 저장
+    # 결과 저장 (해밍 거리 저장)
     if use_compare_cache:
-        add_compare_record(file1, file2, method, hash_size, is_duplicate)
+        add_compare_record(file1, file2, method, hash_size, diff)
 
     item_elapsed = (time.perf_counter() - item_start) * 1000
     if is_duplicate:
@@ -510,16 +513,16 @@ def preload_compare_cache(method, hash_size, max_memory_mb=0):
         try:
             cur = conn.cursor()
             _ensure_tables_exist(cur, method, hash_size)
-            cur.execute(f"SELECT file1, file2, is_duplicate FROM {compare_table}")
+            cur.execute(f"SELECT file1, file2, hamming_distance FROM {compare_table}")
             rows = cur.fetchall()
         finally:
             conn.close()
 
     loaded = 0
     with compare_memory_lock:
-        for file1, file2, is_dup in rows:
+        for file1, file2, hamming_dist in rows:
             cache_key = (file1, file2, method, hash_size)
-            compare_memory_cache[cache_key] = bool(is_dup)
+            compare_memory_cache[cache_key] = int(hamming_dist)
             loaded += 1
             # max_memory_mb 제한: 대략 1건당 100바이트로 추정
             if max_memory_mb > 0 and loaded * 100 >= max_memory_mb * 1024 * 1024:
@@ -602,12 +605,12 @@ def compare_file_with_list(file1, file2_list, method, hash_size, tolerance, verb
         if h2 is None:
             continue
 
-        # 기존 비교 결과 확인 (메모리 캐시 우선)
+        # 기존 비교 결과 확인 (캐시된 해밍 거리를 현재 tolerance와 비교해 재판정)
         if use_compare_cache:
-            cached_result = already_compared(file1, file2, method, hash_size)
-            if cached_result is not None:
+            cached_hamming = already_compared(file1, file2, method, hash_size)
+            if cached_hamming is not None:
                 total += 1
-                if cached_result:
+                if int(cached_hamming) <= tolerance:
                     duplicates += 1
                     try:
                         record_duplicate_pair(file1, file2)
@@ -637,9 +640,9 @@ def compare_file_with_list(file1, file2_list, method, hash_size, tolerance, verb
                 request_stop()
                 break
 
-        # 비교 결과 저장 (메모리 캐시 + DB 비동기 배치)
+        # 비교 결과 저장 (메모리 캐시 + DB 비동기 배치) - 해밍 거리 저장
         if use_compare_cache:
-            add_compare_record(file1, file2, method, hash_size, is_duplicate)
+            add_compare_record(file1, file2, method, hash_size, hamming_distance)
 
     return total, duplicates
 

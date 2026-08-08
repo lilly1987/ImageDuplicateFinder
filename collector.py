@@ -584,11 +584,11 @@ def _run_hash_compare_pipeline(search_mode, folders, include_sub, options, metho
 
                 # 비교 캐시 확인
                 if use_compare_cache:
-                    cached = already_compared(path, matched_path, method, hash_size)
-                    if cached is not None:
+                    cached_hamming = already_compared(path, matched_path, method, hash_size)
+                    if cached_hamming is not None:
                         with stats_lock:
                             stats["total_compared"] += 1
-                            if cached:
+                            if int(cached_hamming) <= tolerance:
                                 stats["total_duplicates"] += 1
                                 try:
                                     record_duplicate_pair(path, matched_path)
@@ -628,9 +628,9 @@ def _run_hash_compare_pipeline(search_mode, folders, include_sub, options, metho
                             request_stop()
                             return
 
-                # 비교 결과 저장
+                # 비교 결과 저장 (해밍 거리 저장)
                 if use_compare_cache:
-                    add_compare_record(path, matched_path, method, hash_size, is_dup)
+                    add_compare_record(path, matched_path, method, hash_size, hamming_distance)
         else:
             # BK-Tree 미사용: 기존 방식 (모든 파일과 비교)
             with all_hashes_lock:

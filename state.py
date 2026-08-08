@@ -14,7 +14,7 @@ stop_event = threading.Event()
 hash_memory_cache = {}
 hash_memory_lock = threading.Lock()
 
-# 비교 결과 메모리 캐시: {(file1, file2, method, hash_size): is_duplicate}
+# 비교 결과 메모리 캐시: {(file1, file2, method, hash_size): hamming_distance}
 compare_memory_cache = {}
 compare_memory_lock = threading.Lock()
 
