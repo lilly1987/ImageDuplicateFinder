@@ -60,7 +60,7 @@ def create_folder_list(root):
     tree = ttk.Treeview(tree_frame, columns=("checked", "path"), show="tree headings", selectmode="extended")
     tree.heading("#0", text="")
     tree.heading("checked", text="선택")
-    tree.heading("path", text="폴더 경로")
+    tree.heading("path", text="폴더 경로 ▽", command=lambda: _sort_by_path(container))
     tree.column("#0", width=40, anchor="center", stretch=False)
     tree.column("checked", width=60, anchor="center", stretch=False)
     tree.column("path", width=1500, minwidth=600, anchor="w", stretch=False)
@@ -90,6 +90,8 @@ def create_folder_list(root):
     container._invert_btn = invert_btn
     # 필터로 숨겨진(detach된) 항목 ID 추적 (필터 해제 시 복원용)
     container._detached = set()
+    # 정렬 상태: True=오름차순, False=내림차순
+    container._sort_ascending = True
 
     return container
 
@@ -142,6 +144,35 @@ def _invert_all_checked(container):
     for item_id in all_ids:
         current = tree.set(item_id, "checked")
         tree.set(item_id, "checked", "☐" if current == "☑" else "☑")
+    _apply_filter(container)
+
+
+def _sort_by_path(container):
+    """폴더 경로 컬럼 헤더 클릭 시 정렬/역정렬 토글"""
+    tree = container._tree
+    ascending = container._sort_ascending
+
+    # 표시 중인 항목 + 필터로 숨겨진(detach된) 항목 모두 수집
+    all_ids = list(tree.get_children()) + list(container._detached)
+    # (경로, 항목ID) 쌍으로 정렬
+    items = [(tree.set(iid, "path"), iid) for iid in all_ids]
+    items.sort(key=lambda x: x[0].lower(), reverse=not ascending)
+
+    # detach된 항목을 먼저 복원 (정렬 순서대로 재배치하기 위해)
+    for iid in list(container._detached):
+        tree.reattach(iid, "", "end")
+    container._detached.clear()
+
+    # 정렬 순서에 따라 트리에 재배치
+    for index, (path, iid) in enumerate(items):
+        tree.move(iid, "", index)
+
+    # 정렬 방향 반전 + 헤더 텍스트에 화살표 표시
+    container._sort_ascending = not ascending
+    arrow = "△" if ascending else "▽"
+    tree.heading("path", text=f"폴더 경로 {arrow}")
+
+    # 필터 재적용 (정렬 후 필터 조건에 맞지 않는 항목 다시 숨김)
     _apply_filter(container)
 
 
