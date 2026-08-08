@@ -37,18 +37,12 @@ def resolve_search_options(method=None, hash_size=None, aspect_ratio_tol=None, t
         method = method if method is not None else options.get("compare_method", "ahash")
         hash_size = hash_size if hash_size is not None else int(options.get("hash_size", 8))
         aspect_ratio_tol = aspect_ratio_tol if aspect_ratio_tol is not None else float(options.get("aspect_ratio_tolerance", 0.02))
-        # tolerance_hamming(정수) 우선, 없으면 tolerance_rate(비율)에서 변환
-        tolerance_hamming = options.get("tolerance_hamming", None)
-        if tolerance_hamming is not None:
-            try:
-                tolerance_hamming = int(tolerance_hamming)
-            except Exception:
-                tolerance_hamming = None
-        if tolerance_hamming is not None:
-            tolerance = tolerance if tolerance is not None else max(0, min(hash_size * hash_size, tolerance_hamming))
-        else:
-            tolerance_rate = float(options.get("tolerance_rate", 0.0))
-            tolerance = tolerance if tolerance is not None else max(0, min(hash_size * hash_size, int(round(tolerance_rate * hash_size * hash_size))))
+        tolerance_hamming = options.get("tolerance_hamming", 0)
+        try:
+            tolerance_hamming = int(tolerance_hamming)
+        except Exception:
+            tolerance_hamming = 0
+        tolerance = tolerance if tolerance is not None else max(0, min(hash_size * hash_size, tolerance_hamming))
     return method, int(hash_size), float(aspect_ratio_tol), int(tolerance)
 
 
@@ -134,17 +128,9 @@ def _load_groups_from_json(path, method, hash_size, aspect_ratio_tol, tolerance)
         data = json.load(fh)
     saved_options = data.get("search_options")
     if saved_options:
-        # 저장된 tolerance가 정수(int)인지 구버전 비율(float tolerance_rate)인지 호환 처리
-        saved_tol_raw = saved_options.get("tolerance", saved_options.get("tolerance_rate"))
+        saved_tol = saved_options.get("tolerance", -1)
         try:
-            if isinstance(saved_tol_raw, (int, float)) and not isinstance(saved_tol_raw, bool):
-                if float(saved_tol_raw).is_integer():
-                    saved_tol = int(saved_tol_raw)
-                else:
-                    # 구버전: 비율(ratio) → 정수 해밍 거리로 변환
-                    saved_tol = int(round(float(saved_tol_raw) * hash_size * hash_size))
-            else:
-                saved_tol = -1
+            saved_tol = int(saved_tol)
         except Exception:
             saved_tol = -1
         if (

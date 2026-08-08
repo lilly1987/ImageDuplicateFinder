@@ -24,17 +24,12 @@ def _resolve_compare_options(options):
     include_sub = options.get("include_subfolders", "include") == "include"
     method = options.get("compare_method", "ahash")
     hash_size = int(options.get("hash_size", 8))
-    # tolerance_hamming(정수 해밍 거리)을 기본값으로 사용
-    tolerance_hamming = options.get("tolerance_hamming", None)
-    if tolerance_hamming is not None:
-        try:
-            tolerance = max(0, min(hash_size * hash_size, int(tolerance_hamming)))
-        except Exception:
-            tolerance = 0
-    else:
-        # 하위 호환: tolerance_rate(비율)에서 변환
-        tolerance_rate = float(options.get("tolerance_rate", 0.0))
-        tolerance = max(0, min(hash_size * hash_size, int(round(tolerance_rate * hash_size * hash_size))))
+    # tolerance_hamming(정수 해밍 거리)
+    tolerance_hamming = options.get("tolerance_hamming", 0)
+    try:
+        tolerance = max(0, min(hash_size * hash_size, int(tolerance_hamming)))
+    except Exception:
+        tolerance = 0
     duplicate_limit = options.get("duplicate_limit_count", 1000)
     try:
         duplicate_limit = int(duplicate_limit)

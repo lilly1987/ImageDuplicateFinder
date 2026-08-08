@@ -133,22 +133,16 @@ def show_options(root, lang):
     # --- 오차값 (정수형 해밍 거리) ---
     tol_header = tk.Frame(scrollable_frame)
     tol_header.pack(anchor="w", pady=(10, 2), fill="x")
-    tk.Label(tol_header, text=lang["ui"].get("tolerance_rate", "허용 오차 (해밍 거리)"), font=("Arial", 10, "bold")).pack(side="left")
+    tk.Label(tol_header, text=lang["ui"].get("tolerance", "허용 오차 (해밍 거리)"), font=("Arial", 10, "bold")).pack(side="left")
     use_tolerance_var = tk.BooleanVar(value=config.get("use_tolerance", True))
     tk.Checkbutton(tol_header, text=lang["ui"].get("use_check", "사용"), variable=use_tolerance_var).pack(side="left", padx=(8, 0))
-    # tolerance_hamming(정수) 우선, 없으면 기존 tolerance_rate(비율)에서 변환
+    # tolerance_hamming(정수 해밍 거리)
     current_hash_size = int(size_var.get())
-    config_hamming = config.get("tolerance_hamming", None)
-    if config_hamming is not None:
-        try:
-            default_hamming = int(config_hamming)
-        except Exception:
-            default_hamming = None
-    else:
-        default_hamming = None
-    if default_hamming is None:
-        current_rate = float(config.get("tolerance_rate", 0.0))
-        default_hamming = max(0, min(current_hash_size * current_hash_size, int(round(current_rate * current_hash_size * current_hash_size))))
+    config_hamming = config.get("tolerance_hamming", 0)
+    try:
+        default_hamming = max(0, min(current_hash_size * current_hash_size, int(config_hamming)))
+    except Exception:
+        default_hamming = 0
     rate_var = tk.IntVar(value=default_hamming)
     tk.Entry(scrollable_frame, textvariable=rate_var).pack(anchor="w")
     tk.Label(scrollable_frame, text="해시 값이 몇 비트까지 달라도 중복으로 판정할지 정수로 입력합니다. (예: 0 = 완전히 같은 해시만, 2 = 비트 2개까지 허용) 체크 해제 시 완전히 같은 해시만 중복으로 판정합니다.", fg="gray", wraplength=550, justify="left").pack(anchor="w", fill="x")

@@ -174,14 +174,11 @@ def show_duplicate_results_window(root, lang, folder_list=None):
                 _method = _search_opts.get("method")
                 _hash_size = _search_opts.get("hash_size")
                 _ratio = _search_opts.get("aspect_ratio_tol")
-                _tol = _search_opts.get("tolerance")
-                if _tol is None:
-                    # 구버전 호환: tolerance_rate(비율) → 정수 해밍 거리
-                    _tol_raw = _search_opts.get("tolerance_rate")
-                    try:
-                        _tol = int(round(float(_tol_raw) * _hash_size * _hash_size)) if _tol_raw is not None else None
-                    except Exception:
-                        _tol = None
+                _tol = _search_opts.get("tolerance", -1)
+                try:
+                    _tol = int(_tol)
+                except Exception:
+                    _tol = -1
                 if _method and _hash_size is not None:
                     key = (_method, _hash_size, _ratio, _tol)
                     if key not in seen:
@@ -206,12 +203,7 @@ def show_duplicate_results_window(root, lang, folder_list=None):
                     if hash_size_str.startswith("h") and ratio_str.startswith("ratio") and tol_str.startswith("tol"):
                         hash_size = int(hash_size_str[1:])
                         aspect_ratio_tol = float(ratio_str[5:].replace("p", "."))
-                        tol_raw = tol_str[3:]
-                        # 새 형식(tol{int}) 또는 구버전 비율(tol0p000244140625) 모두 지원
-                        if "p" in tol_raw:
-                            tolerance = int(round(float(tol_raw.replace("p", ".")) * hash_size * hash_size))
-                        else:
-                            tolerance = int(tol_raw)
+                        tolerance = int(tol_str[3:])
                         key = (method, hash_size, aspect_ratio_tol, tolerance)
                         if key not in seen:
                             seen.add(key)

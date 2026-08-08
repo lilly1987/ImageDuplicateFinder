@@ -25,7 +25,7 @@ REQUIRED_KEYS = {
     "hash_size": "Hash Size (larger = more precise but slower)",
     "ratio_tolerance": "Resolution ratio tolerance (e.g. 0.02)",
     "use_check": "Use",
-    "tolerance_rate": "Tolerance (Hamming distance)",
+    "tolerance": "Tolerance (Hamming distance)",
     "duplicate_limit": "Stop when duplicate count reached",
     "hash_batch_size": "Hash precompute batch size",
     "max_hash_compute_files": "Max hash compute files (0=all, cached excluded)",
